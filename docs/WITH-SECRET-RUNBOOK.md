@@ -1,0 +1,152 @@
+# with-secret runbook
+
+`with-secret` runs ONE command with ONE secret in its environment, after CireSnave approves via
+Windows Hello. Design and decisions: `WITH-SECRET-DESIGN.md`. Build plan:
+`docs/superpowers/plans/2026-10-01-with-secret.md`.
+
+## 1. The honest limit (read this first)
+
+Copied in full from `WITH-SECRET-DESIGN.md` §3:
+
+**This stops ACCIDENTAL exposure** like the 2026-09-28 incident:
+- no secret sits in any environment that a dump could print;
+- reading one needs CireSnave's PIN, once per lane, per secret, per day;
+- dump commands are refused;
+- known values are masked in tool output.
+
+**It does not stop deliberate misuse.**
+- A process that has been granted a secret can print it, send it elsewhere, or pass it on to
+  its own children. An environment variable is inherited by grandchildren.
+- Any process running as this Windows user can call DPAPI to decrypt the vault file. It can read
+  `with-secret`'s memory while that is running, forge an approval-cache entry by first taking
+  the DPAPI-protected HMAC key, or send keystrokes to the desktop.
+- DPAPI at user scope protects the vault against copies of the disk and backups. It does not
+  protect against other processes running as this same user.
+- Masking finds exact matches only. A value that has been transformed in any way (URL-encoded,
+  split, base64-encoded) passes through.
+- An approval covers its secret for the whole window, not one command. Until the window ends,
+  the approved requester can run other commands with the same secret. Per-command scoping was
+  considered and declined by the PM on 2026-10-01; the Hello prompt (naming the command and
+  reason) and a short `--window-mins` are the controls. This is an accepted limit.
+
+Least privilege (e) limits how much damage a leaked secret can do. It is a procedure for
+CireSnave and the PM when they provision each credential, and no tool can enforce it.
+
+## 2. Install
+
+1. Build: `cargo build --release -p with-secret`.
+2. **The PM installs it** at `C:\Projects\.claude-hooks\with-secret.exe`, the same way
+   `lane-restart.exe` is installed: by full path, keeping any previous binary under a versioned
+   name (`with-secret.<version>.exe`). It is not on `PATH`; always call it by full path.
+3. Check it: `C:/Projects/.claude-hooks/with-secret.exe vault check`. Expected:
+   `DPAPI round trip: ok`. `check` never shows a Hello prompt.
+
+Data lives in `%LOCALAPPDATA%\OverMind\with-secret\`: `vault.bin` (DPAPI-protected),
+`masks.json` (salted hashes, no values), `approvals.key` (DPAPI-protected), `approvals.json`
+(HMAC-signed), `access.log` (no values). `WITH_SECRET_DIR` overrides this **for tests only**; a
+lane that set it would just reach an empty vault.
+
+## 3. Adding a secret (CireSnave only)
+
+At his own console:
+
+```
+C:/Projects/.claude-hooks/with-secret.exe vault set NAME --env VAR --access read|write [--rotate-by YYYY-MM-DD]
+```
+
+The value is typed twice, not echoed, and never accepted from argv or a pipe; then a Hello prompt
+confirms the store. A lane can never do this: it has no console to type at, and the prompt needs
+CireSnave's PIN or biometric. `vault list` shows names, env vars, access and rotate-by dates (never
+values); `vault remove NAME` deletes one, also behind a Hello prompt.
+
+## 4. Using a secret from a lane
+
+```
+C:/Projects/.claude-hooks/with-secret.exe NAME --reason "why, in at least 10 characters" [--window-mins M] -- <command> [args...]
+```
+
+- Call it from the Bash tool with `timeout: 600000`: the Hello prompt waits up to 9 minutes.
+- ⚠️ From Git Bash, prefix `MSYS_NO_PATHCONV=1` when the command has slash flags such as
+  `cmd /c`. Otherwise MSYS rewrites `/c` to `C:/`, cmd starts interactively and does nothing, and
+  CireSnave approves a command that is not the one you meant (measured on spike day, 2026-10-01).
+- The prompt on CireSnave's screen names the secret, the lane, the command, the reason and when
+  the approval would expire. Nothing is released until he approves.
+- The secret is set as `VAR` in that one child's environment and nowhere else. The child's stdout
+  and stderr are masked: the value prints as `[with-secret:NAME]`.
+- One approval covers **one lane, one secret**, until local midnight at the latest, or for
+  `--window-mins M` if that is shorter. Later calls in the window need no prompt.
+- A lane restart voids it: a new session is a new requester.
+- A command that would dump the environment (`env`, `printenv`, `set`, `Get-ChildItem env:`, ...)
+  and a read of a `.env` file are refused outright, exit code 2.
+- The PM can request a secret the same way, for a bounded task (e.g. a hand-run migration with a
+  short `--window-mins`).
+
+## 5. Hook wiring
+
+The hooks are defence in depth, not the gate: `pre-tool-use` refuses environment dumps in any
+lane, and `post-tool-use` masks every stored value in tool output. Both **fail open**: a hook
+error allows the call and prints a warning, so a hook bug can never block every lane.
+
+Add these entries to the `PreToolUse` and `PostToolUse` arrays in the **user-level**
+`C:\Users\cires\.claude\settings.json`, beside the existing `lane-restart.exe` entries (that is
+where every lane's hooks already live; the plan named `C:\Projects\.claude\settings.json`, which
+holds no hooks):
+
+```json
+"PreToolUse": [
+  {
+    "matcher": "Bash|PowerShell|Read",
+    "hooks": [
+      {
+        "type": "command",
+        "command": "C:/Projects/.claude-hooks/with-secret.exe hook pre-tool-use 2>>C:/Projects/.lane-state/hook-errors.log"
+      }
+    ]
+  }
+],
+"PostToolUse": [
+  {
+    "matcher": "Bash|PowerShell|Read",
+    "hooks": [
+      {
+        "type": "command",
+        "command": "C:/Projects/.claude-hooks/with-secret.exe hook post-tool-use 2>>C:/Projects/.lane-state/hook-errors.log"
+      }
+    ]
+  }
+]
+```
+
+⚠️ **Applying this is CireSnave's or the PM's step.** It is shared configuration that every lane
+loads; a lane never applies it.
+
+Measured on Claude Code 2.1.287 (design §4, and this build's own binary as the hook):
+
+- `updatedToolOutput` replaces a tool's output **only as an object** in the tool's own result
+  shape (`{stdout, stderr, interrupted, isImage}` for Bash and PowerShell; `{type, file:{...}}` for
+  Read). A string is silently ignored. `post-tool-use` copies `tool_response` and masks its
+  strings, so the shape is kept.
+- With it, a stored value was masked for Bash, PowerShell and Read, in both the model's result
+  and the transcript's `toolUseResult`, and ordinary output passed through unchanged.
+- `pre-tool-use` denied `printenv`, and the model saw the reason.
+- ⚠️ The hook's own stdin carries the raw output. `with-secret` never logs it; nothing else
+  should be pointed at that stream.
+
+## 6. Least privilege (a procedure; no tool enforces it)
+
+- For each credential, prefer a **read-only role for checks** (Neon: `CREATE ROLE ... LOGIN`, then
+  `GRANT SELECT`), stored as an `--access read` secret.
+- **Write credentials are separate secrets** with `--rotate-by` at most 7 days out. `vault list`
+  flags one that is overdue.
+- For a one-off task, store a credential made for that task, never the owner credential.
+- Rotation is done by hand in the provider's console.
+
+## 7. Migrating `TJ_PROD_DATABASE_URL` (item 81; CireSnave's step)
+
+1. Rotate the `neondb_owner` password in Neon's console.
+2. Store the new string:
+   `with-secret vault set TJ_PROD_DATABASE_URL --env DATABASE_URL --access write --rotate-by <date>`.
+3. Create a read-only role and store it as `TJ_PROD_DATABASE_URL_RO` (`--access read`).
+4. Confirm the old User-scope variable is gone. In PowerShell,
+   `[Environment]::GetEnvironmentVariable('TJ_PROD_DATABASE_URL','User')` must return nothing.
+   As a control, the same call for `PATH` returns a value.
