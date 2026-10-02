@@ -1,7 +1,9 @@
 # `with-secret` — secret storage with per-use owner approval: design
 
-**Status: BUILT (crates/with-secret); the live Hello checks (T0 3b/3c, T8 step 5) are pending.
-Hooks wired: no.** Design approved by the PM 2026-10-01. Implementation plan:
+**Status: BUILT (crates/with-secret). The live Hello checks (T0 3b/3c, T8 step 5) were run with
+CireSnave at the desktop on 2026-10-01 and passed (§4 and the #102 body). `with-secret.exe` 0.5.1 is
+installed at `C:/Projects/.claude-hooks/` (the PM, 2026-10-02). Hooks wired: no. Wiring them edits the user
+settings.json, which only CireSnave can do (runbook §5).** Design approved by the PM 2026-10-01. Implementation plan:
 `docs/superpowers/plans/2026-10-01-with-secret.md`. Source: board item 81 in
 `C:\Projects\CIRESNAVE-DECISIONS.md`.
 
