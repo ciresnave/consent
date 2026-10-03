@@ -2,8 +2,9 @@
 
 **Status: BUILT (crates/with-secret). The live Hello checks (T0 3b/3c, T8 step 5) were run with
 CireSnave at the desktop on 2026-10-01 and passed (§4 and the #102 body). `with-secret.exe` 0.5.1 is
-installed at `C:/Projects/.claude-hooks/` (the PM, 2026-10-02). Hooks wired: no. Wiring them edits the user
-settings.json, which only CireSnave can do (runbook §5).** Design approved by the PM 2026-10-01. Implementation plan:
+installed at `C:/Projects/.claude-hooks/` (the PM, 2026-10-02). Hooks wired: yes, in the user settings.json,
+by the PM on 2026-10-02 at about 23:27Z (runbook §5). `pre-tool-use` was seen denying in a live session
+on 2026-10-03; `post-tool-use` masking was checked on the binary only, not yet in a session.** Design approved by the PM 2026-10-01. Implementation plan:
 `docs/superpowers/plans/2026-10-01-with-secret.md`. Source: board item 81 in
 `C:\Projects\CIRESNAVE-DECISIONS.md`.
 
@@ -127,7 +128,8 @@ Run from the OverMind lane's Bash tool. 3b and 3c ran with CireSnave at the desk
   - `cargo test -p with-secret -- --ignored live_hello` (default owner): dialog shown, cancelled,
     `Denied`: pass.
 - Hook protocol (3d), Claude Code 2.1.287, headless `claude -p` in a scratch dir outside every
-  repo; each result read from the session transcript, not from the model's account:
+  repo; each result read from the session transcript, not from the model's account. ⚠️ Not
+  re-measured on 2.1.288 (installed by 2026-10-03), where the object-form claim is unverified:
   - (i) `updatedToolOutput` replaces Bash output: **yes, but only in object form.** The string
     form (`"REPLACED"`) was ignored: the hook ran, and the tool result stayed `hello`.
   - (ii) Result field: `tool_response`, an object:
