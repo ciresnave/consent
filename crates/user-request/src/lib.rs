@@ -11,8 +11,10 @@
 
 pub mod channel;
 pub mod consent;
+pub mod dpapi;
 pub mod hello;
 pub mod request;
+pub mod store;
 
 pub use channel::{prompt_text, Channel, HelloChannel, Outcome, PushChannel, SmsChannel};
 pub use consent::{Consent, ConsentOutcome};
