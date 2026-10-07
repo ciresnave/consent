@@ -22,7 +22,7 @@ code requesting something from a user could use them interchangeably"*.
 
 | kind | maximum grant | scope |
 |---|---|---|
-| `Secret` (with-secret) | until the next local midnight | this requester only; a lane restart voids it |
+| `Secret` (with-secret) | any **finite** length: the requester states it, the person sees the end (loudly past today) and may refuse (board 134); never forever (PM ruling) | this requester only; a lane restart voids it |
 | `LaneDialogBypass` (lane-restart) | **FOREVER** | any requester |
 
 ### Kinds that can be granted forever
@@ -31,7 +31,8 @@ Every kind whose maximum is `Forever` must be listed here, and nowhere else may 
 
 - `LaneDialogBypass`: auto-answering a lane's startup dialog.
 
-A forever grant is described in the prompt as `*** FOREVER (until revoked) ***`.
+A forever grant is described in the prompt as `*** FOREVER (until revoked) ***`. A grant that ends
+after the next local midnight is described as `*** LONGER THAN TODAY: ... ***`.
 
 ## How a duration is chosen
 

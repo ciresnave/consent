@@ -1325,23 +1325,27 @@ fn an_old_reservation_cannot_be_resolved() {
 /// grant, even when the channel returned it.
 #[test]
 fn an_approval_longer_than_its_kind_allows_is_refused() {
+    // a secret may be any finite length, never forever (PM ruling on #115
+    // M4); nor may any approval end before it is given
     let d = tempdir().unwrap();
     let a = who("o", "s");
     let mut s = open(d.path());
     let r = reserve(&mut s, &a, "DB", t0());
     let forever = Outcome::Approved(approval(KindId::Secret, "DB", &a, None));
     assert!(s.resolve_at(&r, &forever, t0(), &AuditOnly).is_err());
-    let tomorrow = Outcome::Approved(approval(
+    let ended = Outcome::Approved(approval(KindId::Secret, "DB", &a, Some(t0())));
+    assert!(s.resolve_at(&r, &ended, t0(), &AuditOnly).is_err());
+    assert!(s.grants.is_empty());
+    // and the attempt is still pending: a valid answer can still land, and a
+    // long one is a valid answer now (board 134)
+    let month = Outcome::Approved(approval(
         KindId::Secret,
         "DB",
         &a,
-        Some(t0() + Duration::days(2)),
+        Some(t0() + Duration::days(30)),
     ));
-    assert!(s.resolve_at(&r, &tomorrow, t0(), &AuditOnly).is_err());
-    assert!(s.grants.is_empty());
-    // and the attempt is still pending: a valid answer can still land
     assert!(s
-        .resolve_at(&r, &answer("approved", &a, "DB"), t0(), &AuditOnly)
+        .resolve_at(&r, &month, t0(), &AuditOnly)
         .unwrap()
         .is_some());
 }

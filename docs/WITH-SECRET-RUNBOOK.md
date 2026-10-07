@@ -75,9 +75,16 @@ C:/Projects/.claude-hooks/with-secret.exe NAME --reason "why, in at least 10 cha
   the approval would expire. Nothing is released until he approves.
 - The secret is set as `VAR` in that one child's environment and nowhere else. The child's stdout
   and stderr are masked: the value prints as `[with-secret:NAME]`.
-- One approval covers **one lane, one secret**, until local midnight at the latest, or for
-  `--window-mins M` if that is shorter. Later calls in the window need no prompt.
+- One approval covers **one lane, one secret**.
+  - With `--window-mins M` it lasts M minutes from now, however long.
+  - Without it, it lasts until local midnight.
+  - The prompt shows the end. One that runs past today is shown as `*** LONGER THAN TODAY ***`, so
+    it is never approved by habit (board 134, CireSnave 2026-10-07: "if I or some other user
+    disagrees, we simply don't aprove it").
+  - Later calls in the window need no prompt.
 - A lane restart voids it: a new session is a new requester.
+- `with-secret revoke NAME` or `with-secret revoke --all` ends approvals at once, with no Hello
+  prompt, because it only removes privilege.
 - A command that would dump the environment (`env`, `printenv`, `set`, `Get-ChildItem env:`, ...)
   and a read of a `.env` file are refused outright, exit code 2.
 - The PM can request a secret the same way, for a bounded task (e.g. a hand-run migration with a

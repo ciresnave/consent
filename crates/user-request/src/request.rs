@@ -30,6 +30,8 @@ pub enum MaxGrant {
     UntilLocalMidnight,
     /// No longer than this from the moment it is shown.
     For(Duration),
+    /// Any stated end, however far, but never forever.
+    Finite,
     /// Anything, including forever.
     Forever,
 }
@@ -66,7 +68,10 @@ impl KindId {
 
     pub fn max(self) -> MaxGrant {
         match self {
-            KindId::Secret => MaxGrant::UntilLocalMidnight,
+            // board 134 (CireSnave, 2026-10-07): the requester states how
+            // long, the person sees the end (loudly when past today) and may
+            // refuse. A stated length, never forever (PM ruling on #115 M4)
+            KindId::Secret => MaxGrant::Finite,
             KindId::LaneDialogBypass => MaxGrant::Forever,
         }
     }
@@ -138,6 +143,7 @@ impl Grant {
         }
         match (max, end) {
             (MaxGrant::Forever, _) => true,
+            (MaxGrant::Finite, end) => end.is_some(),
             (_, None) => false,
             (MaxGrant::For(d), Some(e)) => utc.checked_add_signed(d).is_some_and(|m| e <= m),
             (MaxGrant::UntilLocalMidnight, Some(e)) => e <= next_local_midnight(now),
@@ -153,7 +159,7 @@ impl Grant {
                 .format("%Y-%m-%d %H:%M:%S %Z")
                 .to_string()
         };
-        match (self, self.end_at(now)) {
+        let text = match (self, self.end_at(now)) {
             (_, Err(_)) => "an impossible duration (refused)".to_string(),
             (_, Ok(None)) => "*** FOREVER (until revoked) ***".to_string(),
             (Grant::For { secs }, Ok(Some(end))) => {
@@ -161,6 +167,13 @@ impl Grant {
                 format!("for {h}h {m:02}m {s:02}s, until {}", local(end))
             }
             (_, Ok(Some(end))) => format!("until {}", local(end)),
+        };
+        // board 134: an end past today is never approved by habit
+        match self.end_at(now) {
+            Ok(Some(end)) if end > next_local_midnight(now.with_timezone(&Local)) => {
+                format!("*** LONGER THAN TODAY: {text} ***")
+            }
+            _ => text,
         }
     }
 }
@@ -245,8 +258,8 @@ mod tests {
             next_local_midnight(now),
             Utc.with_ymd_and_hms(2026, 3, 28, 22, 0, 0).unwrap()
         );
-        // and a secret cannot outlive it
-        let max = KindId::Secret.max();
+        // and a midnight maximum cannot outlive it
+        let max = MaxGrant::UntilLocalMidnight;
         assert!(Grant::for_duration(Duration::hours(4)).within(max, now));
         assert!(!Grant::for_duration(Duration::hours(4) + Duration::seconds(1)).within(max, now));
     }
@@ -264,15 +277,30 @@ mod tests {
         );
     }
 
+    /// Board 134 (CireSnave, 2026-10-07): the requester states how long, the
+    /// person sees it and may refuse; a secret has no compiled cap.
     #[test]
-    fn a_secret_may_be_granted_until_midnight_but_never_beyond() {
+    fn a_secret_may_be_any_finite_length_but_never_forever() {
+        // PM ruling on #115 M4 (2026-10-07): "as long of a time as it wants"
+        // is a stated length; FOREVER is something CireSnave did not choose
         let now = at(18, 0);
         let max = KindId::Secret.max();
+        assert_eq!(max, MaxGrant::Finite);
+        assert!(Grant::Until(now.with_timezone(&Utc) + Duration::days(3650)).within(max, now));
+        assert!(Grant::for_duration(Duration::days(30)).within(max, now));
+        assert!(!Grant::Forever.within(max, now));
+        // control: the dialog bypass still may be forever
+        assert!(Grant::Forever.within(KindId::LaneDialogBypass.max(), now));
+    }
+
+    /// The midnight maximum still works for any kind that uses it.
+    #[test]
+    fn an_until_midnight_maximum_stops_at_midnight() {
+        let now = at(18, 0);
+        let max = MaxGrant::UntilLocalMidnight;
         let midnight = Utc.with_ymd_and_hms(2026, 10, 8, 7, 0, 0).unwrap();
         assert!(Grant::Until(midnight).within(max, now));
         assert!(!Grant::Until(midnight + Duration::seconds(1)).within(max, now));
-        assert!(Grant::for_duration(Duration::hours(6)).within(max, now));
-        assert!(!Grant::for_duration(Duration::hours(6) + Duration::seconds(1)).within(max, now));
         assert!(!Grant::Forever.within(max, now));
     }
 
@@ -336,6 +364,34 @@ mod tests {
             let d = g.describe(now);
             assert!(d.contains("until") && !d.contains("FOREVER"), "{d}");
         }
+    }
+
+    /// Board 134: an end after the next local midnight is described in a
+    /// loud, distinct form; one within today is not.
+    #[test]
+    fn an_end_after_today_is_described_loudly() {
+        let now = at(9, 0).with_timezone(&Utc);
+        for g in [
+            Grant::for_duration(Duration::hours(20)),
+            Grant::Until(now + Duration::days(3)),
+        ] {
+            assert!(
+                g.describe(now).contains("*** LONGER THAN TODAY"),
+                "{}",
+                g.describe(now)
+            );
+        }
+        for g in [
+            Grant::for_duration(Duration::hours(1)),
+            Grant::Until(now + Duration::hours(2)),
+        ] {
+            assert!(
+                !g.describe(now).contains("LONGER THAN TODAY"),
+                "{}",
+                g.describe(now)
+            );
+        }
+        assert!(!Grant::Forever.describe(now).contains("LONGER THAN TODAY"));
     }
 
     #[test]

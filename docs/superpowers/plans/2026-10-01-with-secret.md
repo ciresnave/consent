@@ -1,5 +1,11 @@
 # `with-secret` Implementation Plan
 
+> ⚠️ **Superseded on approval length (board 134, 2026-10-07):** an approval no longer ends at local
+> midnight at the latest. `--window-mins` sets the end, however long; the Hello prompt shows it,
+> loudly when it is past today; and `with-secret revoke` ends approvals. Without a window the end is
+> still local midnight. The midnight cap and the clamping below are this plan's history, not the
+> current rule: see `docs/WITH-SECRET-RUNBOOK.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a Rust tool, `with-secret`. It stores secrets in a vault encrypted with DPAPI (Windows' built-in per-user encryption), and puts one secret into one child process only after CireSnave has approved it with a Windows Hello prompt. One approval covers one lane and one secret until local midnight at the latest, and ends early if the lane restarts. The tool also ships Claude Code hooks that block environment dumps and mask known secret values in tool output.

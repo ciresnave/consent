@@ -41,7 +41,8 @@ pub const MAX_ROLE_CHARS: usize = 64;
 /// Requester-supplied text with every control and invisible formatting
 /// character (newlines, bidi overrides, zero-width marks) replaced by a
 /// space, so it cannot forge or reorder the prompt's own lines (review I2).
-fn clean(s: &str) -> String {
+/// with-secret's prompt uses it too.
+pub fn clean(s: &str) -> String {
     s.chars()
         .map(|c| {
             let hidden = c.is_control()
@@ -303,6 +304,8 @@ mod tests {
         }
     }
 
+    /// A secret may not be granted forever (PM ruling on #115 M4), and the
+    /// person is not even asked.
     #[test]
     fn a_grant_over_the_kinds_maximum_is_refused_without_asking() {
         let ch = channel(|| ConsentOutcome::Approved, Span::zero());

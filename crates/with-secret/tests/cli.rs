@@ -146,3 +146,32 @@ fn post_tool_use_masks_a_known_value() {
         "updatedToolOutput must be an object with a string stdout: {out}"
     );
 }
+
+/// Board 134: approvals can now outlive today, so they can be ended at any
+/// time, with no Hello (it only removes privilege). DPAPI is Windows-only.
+#[cfg(windows)]
+#[test]
+fn revoke_ends_approvals_and_checks_its_arguments() {
+    let out = bin().args(["revoke", "--all"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "revoked 0 approval(s)"
+    );
+    assert_eq!(
+        bin()
+            .args(["revoke", "TJ_DB"])
+            .output()
+            .unwrap()
+            .status
+            .code(),
+        Some(0)
+    );
+    for bad in [&["revoke"][..], &["revoke", "tj_db"], &["revoke", "A", "B"]] {
+        assert_eq!(
+            bin().args(bad).output().unwrap().status.code(),
+            Some(2),
+            "{bad:?}"
+        );
+    }
+}

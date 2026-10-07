@@ -41,6 +41,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("hook") => return hook(args.get(1).map(String::as_str)),
         Some("vault") => vault_cmd(&args[1..]),
+        Some("revoke") => revoke_cmd(&args[1..]),
         Some("--help") | Some("-h") | None => {
             print!("{HELP}");
             Ok(0)
@@ -60,10 +61,12 @@ const HELP: &str = "\
 with-secret NAME --reason \"why\" [--wait-secs N] [--window-mins M] -- <command> [args...]
     Runs <command> with secret NAME in its environment (and nowhere else), after
     CireSnave approves via Windows Hello. One approval: one lane, one secret,
-    until local midnight at the latest, void on lane restart.
+    void on lane restart, until the end the prompt shows: --window-mins M from
+    now if given (however long; past today it is shown LOUDLY), else midnight.
     Call it from a lane's Bash tool with timeout 600000: the prompt waits up to 9 min.
 with-secret vault list | set NAME --env VAR --access read|write [--rotate-by YYYY-MM-DD]
                 | remove NAME | check
+with-secret revoke NAME | --all     end approvals now (no Hello: it only removes privilege)
 with-secret hook pre-tool-use | post-tool-use     (Claude Code hooks; JSON on stdin)
 
 This stops ACCIDENTAL exposure. It does not stop a process that has a secret from
@@ -88,7 +91,7 @@ fn run(args: &[String]) -> Result<u8, String> {
     } else {
         vec![0; 32]
     };
-    let (mut cache, rejected) = ApprovalCache::load(&approvals_path, key);
+    let (mut cache, rejected) = ApprovalCache::load(&approvals_path, key.clone());
     if rejected > 0 {
         eprintln!("with-secret: ignored {rejected} approval entr(y/ies) with a bad signature");
     }
@@ -110,7 +113,11 @@ fn run(args: &[String]) -> Result<u8, String> {
     }
     let released = decided?;
     if released.newly_granted {
-        cache.save(&approvals_path, Utc::now())?;
+        // against the file as it is now, not the copy loaded before the
+        // prompt: a revocation made while the person was deciding stays
+        // (review of #115, I1)
+        let approval = released.approval.clone();
+        ApprovalCache::update(&approvals_path, key, Utc::now(), |c| c.add(approval))?;
     }
     spawn_masked(&a.argv, &a.secret, &released.secret)
 }
@@ -171,6 +178,26 @@ fn require_hello(action: &str, name: &str) -> Result<(), String> {
         ConsentOutcome::Approved => Ok(()),
         other => Err(format!("not {action}d: {other:?}")),
     }
+}
+
+/// `with-secret revoke NAME | --all`: ends approvals now. No Hello, no
+/// vault key needed beyond the approval key: it only removes privilege.
+fn revoke_cmd(args: &[String]) -> Result<u8, String> {
+    let which = match args {
+        [all] if all == "--all" => None,
+        [name] => {
+            validate_name(name)?;
+            Some(name.as_str())
+        }
+        _ => return Err("usage: with-secret revoke NAME | --all".into()),
+    };
+    let store = store()?;
+    let path = store.dir.join(APPROVALS_FILE);
+    let n = ApprovalCache::update(&path, store.approval_key()?, Utc::now(), |c| {
+        c.revoke(which)
+    })?;
+    println!("revoked {n} approval(s)");
+    Ok(0)
 }
 
 fn vault_cmd(args: &[String]) -> Result<u8, String> {

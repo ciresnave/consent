@@ -47,9 +47,14 @@ pub fn parse_run(args: &[String]) -> Result<RunArgs, String> {
                 wait = Duration::from_secs(val.parse().map_err(|_| "--wait-secs: not a number")?)
             }
             "--window-mins" => {
-                window = Some(chrono::Duration::minutes(
-                    val.parse().map_err(|_| "--window-mins: not a number")?,
-                ))
+                let mins: i64 = val.parse().map_err(|_| "--window-mins: not a number")?;
+                // a window that is not positive, or too long to represent,
+                // is refused (it used to panic)
+                window = Some(
+                    chrono::Duration::try_minutes(mins)
+                        .filter(|d| *d > chrono::Duration::zero())
+                        .ok_or("--window-mins: must be a positive number of minutes")?,
+                )
             }
             other => return Err(format!("unknown option {other}")),
         }
@@ -125,13 +130,14 @@ pub fn authorize(
             newly_granted: false,
         });
     }
-    let expires_at = expiry(now, a.window);
+    let expires_at = expiry(now, a.window).map_err(|e| format!("with-secret: {e}"))?;
     let prompt = prompt_text(&ConsentRequest {
         secret: a.secret.clone(),
         requester: who.clone(),
         command,
         reason: a.reason.clone(),
         expires_at,
+        asked_at: utc,
     });
     let refusal = match consent.ask(&prompt, a.wait) {
         ConsentOutcome::Approved => None,
@@ -262,6 +268,56 @@ mod tests {
         .unwrap();
         assert_eq!(ok.argv, vec!["psql", "-f", "x"]);
         assert_eq!(ok.window, Some(chrono::Duration::minutes(30)));
+    }
+
+    /// Board 134: a window that is not positive or cannot be represented is
+    /// refused at parse, never a panic.
+    #[test]
+    fn a_window_must_be_positive_and_representable() {
+        let p = |w: &str| {
+            parse_run(
+                &[
+                    "TJ_DB",
+                    "--reason",
+                    "seed the prod db",
+                    "--window-mins",
+                    w,
+                    "--",
+                    "psql",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+            )
+        };
+        assert!(p("0").is_err());
+        assert!(p("-5").is_err());
+        assert!(p("9223372036854775807").is_err());
+        assert_eq!(p("2880").unwrap().window, Some(chrono::Duration::days(2)));
+    }
+
+    /// Board 134: the end the person is shown is exactly the end stored,
+    /// including one past midnight, which is shown loudly.
+    #[test]
+    fn the_end_shown_is_the_end_stored() {
+        let consent = FakeConsent::new(ConsentOutcome::Approved);
+        let mut c = cache();
+        let mut log = vec![];
+        let mut a = args(&["psql"]);
+        a.window = Some(chrono::Duration::hours(20));
+        let r = authorize(&a, &vault(), &mut c, &who(), &consent, now(), &mut log).unwrap();
+        let stored = r.approval.expires_at;
+        assert_eq!(
+            stored,
+            (now() + chrono::Duration::hours(20)).with_timezone(&Utc)
+        );
+        let prompt = consent.asked.borrow()[0].clone();
+        let shown = stored
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        assert!(prompt.contains(&shown), "{prompt}");
+        assert!(prompt.contains("LONGER THAN TODAY"), "{prompt}");
     }
 
     #[test]
