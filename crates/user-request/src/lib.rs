@@ -13,6 +13,7 @@ pub mod channel;
 pub mod consent;
 pub mod dpapi;
 pub mod hello;
+pub mod locate;
 pub mod request;
 pub mod store;
 

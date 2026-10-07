@@ -1956,6 +1956,184 @@ fn a_grant_that_landed_is_reported_as_landed() {
     );
 }
 
+// -- #2b: with-secret on the store ---------------------------------------------
+
+/// #2b: `with-secret revoke NAME | --all` revokes one kind's grants (one
+/// subject, or all of them) for every requester, as tombstones, and ends
+/// the matching pending prompts so an approval in flight never lands.
+/// Other kinds and subjects are untouched.
+#[test]
+fn revoke_matching_ends_one_kinds_grants_and_pending_prompts() {
+    let d = tempdir().unwrap();
+    let (a, b) = (who("o", "s"), who("fuel", "t"));
+    let mut s = open(d.path());
+    add(&mut s, approval(KindId::Secret, "DB", &a, Some(mins(60))));
+    add(&mut s, approval(KindId::Secret, "db ", &b, Some(mins(60))));
+    add(
+        &mut s,
+        approval(KindId::Secret, "OTHER", &a, Some(mins(60))),
+    );
+    let bypass = add(&mut s, approval(KindId::LaneDialogBypass, "DB", &a, None));
+    let in_flight = reserve(&mut s, &a, "DB", t0());
+    let other_flight = reserve(&mut s, &a, "OTHER", t0());
+    assert_eq!(
+        s.revoke_matching_at(KindId::Secret, Some("Db"), t0())
+            .unwrap(),
+        2
+    );
+    drop(s);
+    let mut s = open(d.path());
+    assert_eq!(s.untrusted, None, "{:?}", s.untrusted);
+    assert!(s.find_at(KindId::Secret, "DB", &a, t0()).is_none());
+    assert!(s.find_at(KindId::Secret, "DB", &b, t0()).is_none());
+    assert!(s.find_at(KindId::Secret, "OTHER", &a, t0()).is_some());
+    assert!(s.active_at(t0()).iter().any(|g| g.id == bypass));
+    let late = s.resolve_at(
+        &in_flight,
+        &answer("approved", &a, "DB"),
+        mins(1),
+        &AuditOnly,
+    );
+    assert!(late.unwrap_err().contains("already ended"));
+    assert!(s
+        .resolve_at(
+            &other_flight,
+            &answer("approved", &a, "OTHER"),
+            mins(1),
+            &AuditOnly
+        )
+        .unwrap()
+        .is_some());
+    // every subject of the kind
+    assert_eq!(
+        s.revoke_matching_at(KindId::Secret, None, mins(2)).unwrap(),
+        2
+    );
+    assert!(s
+        .active_at(mins(2))
+        .iter()
+        .all(|g| g.approval.kind == KindId::LaneDialogBypass));
+    assert!(audit_text(d.path()).contains("revoked-matching"));
+}
+
+/// #2b: a revocation can never be undone by an old grants file put back.
+#[test]
+fn a_matching_revocation_survives_an_old_file_put_back() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    add(&mut s, approval(KindId::Secret, "DB", &a, Some(mins(60))));
+    drop(s);
+    let before = std::fs::read(d.path().join("grants.json")).unwrap();
+    let mut s = open(d.path());
+    assert_eq!(s.revoke_matching_at(KindId::Secret, None, t0()).unwrap(), 1);
+    drop(s);
+    std::fs::write(d.path().join("grants.json"), before).unwrap();
+    assert!(open(d.path())
+        .find_at(KindId::Secret, "DB", &a, t0())
+        .is_none());
+}
+
+/// #2b: like `revoke`, it works on a store untrusted for its files, and is
+/// refused when the key is the problem (the grants are unknown); a
+/// read-only store refuses it.
+#[test]
+fn revoke_matching_follows_revokes_trust_rules() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    add(&mut s, approval(KindId::Secret, "DB", &a, Some(mins(60))));
+    drop(s);
+    std::fs::remove_file(d.path().join("head.copy")).unwrap();
+    let mut s = open(d.path());
+    assert!(matches!(s.untrusted, Some(Untrusted::Files(_))));
+    assert_eq!(s.revoke_matching_at(KindId::Secret, None, t0()).unwrap(), 1);
+    drop(s);
+    let mut ro = Store::inspect(d.path(), &Xor(7), Some(d.path().join("head.copy")))
+        .unwrap()
+        .unwrap();
+    assert!(ro.revoke_matching_at(KindId::Secret, None, t0()).is_err());
+    drop(ro);
+    let mut wrong = Store::open(d.path(), &Xor(9), Some(d.path().join("head.copy"))).unwrap();
+    assert!(matches!(wrong.untrusted, Some(Untrusted::Key(_))));
+    assert!(wrong
+        .revoke_matching_at(KindId::Secret, None, t0())
+        .is_err());
+}
+
+/// Second review of #2b, finding 4: a revocation whose prompts file was
+/// never written (a crash, a held file) still ends the prompt in flight,
+/// because the ended ids travel with the tombstones, in the file written
+/// first.
+#[test]
+fn a_revocation_cut_short_still_ends_the_prompt_in_flight() {
+    for how in ["matching", "all"] {
+        let d = tempdir().unwrap();
+        let a = who("o", "s");
+        let mut s = open(d.path());
+        let r = reserve(&mut s, &a, "DB", t0());
+        let p = d.path().join("attempts.json");
+        let old = std::fs::read(&p).unwrap();
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir(&p).unwrap();
+        let cut = match how {
+            "matching" => s.revoke_matching_at(KindId::Secret, Some("DB"), t0()),
+            _ => s.revoke_all_at(t0()),
+        };
+        assert!(cut.is_err(), "{how}: the prompts file was written");
+        drop(s);
+        std::fs::remove_dir(&p).unwrap();
+        std::fs::write(&p, old).unwrap();
+        let mut s = open(d.path());
+        assert_eq!(s.untrusted, None, "{how}: {:?}", s.untrusted);
+        let late = s.resolve_at(&r, &answer("approved", &a, "DB"), mins(1), &AuditOnly);
+        assert!(late.unwrap_err().contains("already ended"), "{how}");
+        assert!(
+            s.find_at(KindId::Secret, "DB", &a, mins(1)).is_none(),
+            "{how}"
+        );
+    }
+}
+
+/// Second review of #2b, finding 2: a grant is never honoured before the
+/// moment it was approved (a clock that was wrong ahead, then corrected).
+#[test]
+fn a_grant_is_not_honoured_before_it_was_approved() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    let mut ap = approval(KindId::Secret, "DB", &a, Some(mins(60)));
+    ap.approved_at = mins(1);
+    add(&mut s, ap);
+    assert!(s.find_at(KindId::Secret, "DB", &a, mins(1)).is_some());
+    assert!(s.find_at(KindId::Secret, "DB", &a, t0()).is_none());
+    assert!(s
+        .find_at(KindId::Secret, "DB", &a, t0() - Duration::days(30))
+        .is_none());
+}
+
+/// Second review of #2b, finding 3: an approval whose shown end passed
+/// before it could be recorded makes no grant.
+#[test]
+fn an_approval_that_ended_before_it_was_recorded_grants_nothing() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    let r = reserve(&mut s, &a, "DB", t0());
+    let mut ap = approval(KindId::Secret, "DB", &a, Some(mins(5)));
+    ap.approved_at = mins(4);
+    let late = s.resolve_at(&r, &Outcome::Approved(ap.clone()), mins(6), &AuditOnly);
+    assert!(late.unwrap_err().contains("before it could be recorded"));
+    assert!(s.active_at(mins(4)).is_empty());
+    // control: the same approval, recorded before its end, lands
+    let r = reserve(&mut s, &a, "DB2", t0());
+    ap.subject = "DB2".into();
+    assert!(s
+        .resolve_at(&r, &Outcome::Approved(ap), mins(4), &AuditOnly)
+        .unwrap()
+        .is_some());
+}
+
 /// Review 6, m-5: `audit verify` says when the head copy lags.
 #[test]
 fn verify_reports_a_lagging_head_copy() {

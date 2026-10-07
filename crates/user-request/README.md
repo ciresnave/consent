@@ -40,6 +40,14 @@ Windows Hello is a yes/no dialog with a message: it cannot ask "for how long". S
 chosen **first**, and the message the person approves names it. Hello proves the person was present
 and approved that text; it does not prove they read it.
 
+## Who uses it
+
+- **with-secret** (since #2b): every secret approval is a `Secret` grant here, and every secret
+  prompt passes the prompt gate below. `user-request revoke --all` ends secrets too.
+  `with-secret revoke NAME | --all` revokes only secrets (`Store::revoke_matching`), as tombstones,
+  and ends their pending prompts.
+- `user_request::locate` names the production store, so every binary opens the same one.
+
 ## The store
 
 Everything lives in `%LOCALAPPDATA%\OverMind\user-request\`:
@@ -133,7 +141,10 @@ These limits answer "approval fatigue": a lane re-asking until a mis-click appro
   its reservation.
 - An approval must be for what was reserved, and it becomes a grant in the same step.
 - `revoke --all` and `repair` end every pending prompt, so an approval still in flight never becomes
-  a grant.
+  a grant. The ended prompts are recorded with the tombstones, in the file written first, so this
+  holds even when the prompts file could not be written.
+- An approval whose shown end has passed by the time it is recorded makes no grant, and a grant is
+  never honoured before the moment it was approved (a clock that was wrong ahead, then corrected).
 - Reaching a cap, or 3 refusals within an hour, raises an **alert**, once per role and reason per
   hour.
 - The limits are keyed by role, so restarting a lane resets neither.
@@ -168,8 +179,6 @@ user-request audit verify    check the audit chain since its last reset, and its
   consistently needs no key at all. The chain catches accidents and naive edits, not forgery.
 - The audit log is never rotated, and every append reads it whole.
 - Coming next, per the approved plan:
-  - with-secret's approvals move onto this store, so its prompts pass the gate and `revoke --all`
-    covers secrets;
   - an approver-side chooser where FOREVER, or a date over 30 days away, must be typed;
   - durable pending requests with no timeout;
   - grants for lane-launch dialog bypasses.

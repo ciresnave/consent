@@ -9,12 +9,15 @@ use std::process::{Command, ExitCode, Stdio};
 
 use chrono::{Local, NaiveDate, Utc};
 use lane_restart::facts::{SysinfoFacts, SystemFacts};
-use with_secret::approval::ApprovalCache;
+use user_request::channel::HelloChannel;
+use user_request::locate;
+use user_request::request::KindId;
+use user_request::store::{AuditOnly, Store};
 use with_secret::consent::{store_prompt_text, Consent, ConsentOutcome};
 use with_secret::dpapi::DpapiProtector;
 use with_secret::hello::HelloConsent;
 use with_secret::mask::{mask_json, masks_json, HashMask, StreamMasker};
-use with_secret::run::{authorize, parse_run, DEFAULT_WAIT};
+use with_secret::run::{authorize, parse_run, Approver, DEFAULT_WAIT};
 use with_secret::vault::*;
 use with_secret::{audit, dumpcheck, identity};
 
@@ -27,6 +30,27 @@ fn data_dir() -> Result<PathBuf, String> {
         Some(d) => Ok(d.into()),
         None => default_dir(),
     }
+}
+
+/// The user-request store, where approvals live since #2b. ⚠️ A test that
+/// points WITH_SECRET_DIR at a scratch vault must point the approvals at a
+/// scratch store AND a scratch head copy too (`USER_REQUEST_DIR`,
+/// `USER_REQUEST_HEAD`, honoured in debug builds only): otherwise its
+/// `revoke --all` would end the person's real approvals, or its audit head
+/// would overwrite the real store's and untrust it (second review of #2b,
+/// finding 1).
+fn approvals_dir() -> Result<PathBuf, String> {
+    if std::env::var_os("WITH_SECRET_DIR").is_some()
+        && (locate::env_override("USER_REQUEST_DIR").is_none()
+            || locate::env_override("USER_REQUEST_HEAD").is_none())
+    {
+        return Err(
+            "WITH_SECRET_DIR points at a test vault, but the approvals would be the \
+             real ones: set USER_REQUEST_DIR and USER_REQUEST_HEAD too (debug builds only)"
+                .into(),
+        );
+    }
+    locate::dir()
 }
 
 fn store() -> Result<VaultStore<DpapiProtector>, String> {
@@ -64,6 +88,8 @@ with-secret NAME --reason \"why\" [--wait-secs N] [--window-mins M] -- <command>
     void on lane restart, until the end the prompt shows: --window-mins M from
     now if given (however long; past today it is shown LOUDLY), else midnight.
     Call it from a lane's Bash tool with timeout 600000: the prompt waits up to 9 min.
+    Approvals live in the user-request store; prompts pass its gate (no re-asking
+    within 10 min of a refusal, at most 6 prompts per lane per hour).
 with-secret vault list | set NAME --env VAR --access read|write [--rotate-by YYYY-MM-DD]
                 | remove NAME | check
 with-secret revoke NAME | --all     end approvals now (no Hello: it only removes privilege)
@@ -85,26 +111,16 @@ fn run(args: &[String]) -> Result<u8, String> {
         std::process::id(),
         &identity::load_states(Path::new(LANE_STATE_DIR)),
     )?;
-    let approvals_path = store.dir.join(APPROVALS_FILE);
-    let key = if vault.secrets.contains_key(&a.secret) {
-        store.approval_key()?
-    } else {
-        vec![0; 32]
+    let channel = HelloChannel::new(HelloConsent::default());
+    let approver = Approver {
+        dir: approvals_dir()?,
+        protector: &locate::PROTECTOR,
+        head_copy: Some(locate::head_copy()),
+        channel: &channel,
+        alert: &AuditOnly,
     };
-    let (mut cache, rejected) = ApprovalCache::load(&approvals_path, key.clone());
-    if rejected > 0 {
-        eprintln!("with-secret: ignored {rejected} approval entr(y/ies) with a bad signature");
-    }
     let mut log = Vec::new();
-    let decided = authorize(
-        &a,
-        &vault,
-        &mut cache,
-        &who,
-        &HelloConsent::default(),
-        Local::now(),
-        &mut log,
-    );
+    let decided = authorize(&a, &vault, &who, &approver, &mut log);
     let audit_path = store.dir.join(AUDIT_FILE);
     for e in &log {
         if let Err(err) = audit::append(&audit_path, e) {
@@ -112,13 +128,6 @@ fn run(args: &[String]) -> Result<u8, String> {
         }
     }
     let released = decided?;
-    if released.newly_granted {
-        // against the file as it is now, not the copy loaded before the
-        // prompt: a revocation made while the person was deciding stays
-        // (review of #115, I1)
-        let approval = released.approval.clone();
-        ApprovalCache::update(&approvals_path, key, Utc::now(), |c| c.add(approval))?;
-    }
     spawn_masked(&a.argv, &a.secret, &released.secret)
 }
 
@@ -180,8 +189,11 @@ fn require_hello(action: &str, name: &str) -> Result<(), String> {
     }
 }
 
-/// `with-secret revoke NAME | --all`: ends approvals now. No Hello, no
-/// vault key needed beyond the approval key: it only removes privilege.
+/// `with-secret revoke NAME | --all`: ends secrets' approvals now, for
+/// every lane, and any prompt for them still awaiting an answer. No Hello:
+/// it only removes privilege. Revocations are tombstones in the
+/// user-request store, so an old file put back cannot undo them.
+/// (`user-request revoke --all` ends every kind of grant.)
 fn revoke_cmd(args: &[String]) -> Result<u8, String> {
     let which = match args {
         [all] if all == "--all" => None,
@@ -191,11 +203,13 @@ fn revoke_cmd(args: &[String]) -> Result<u8, String> {
         }
         _ => return Err("usage: with-secret revoke NAME | --all".into()),
     };
-    let store = store()?;
-    let path = store.dir.join(APPROVALS_FILE);
-    let n = ApprovalCache::update(&path, store.approval_key()?, Utc::now(), |c| {
-        c.revoke(which)
-    })?;
+    let dir = approvals_dir()?;
+    let Some(mut s) = Store::open_existing(&dir, &locate::PROTECTOR, Some(locate::head_copy()))?
+    else {
+        println!("revoked 0 approval(s)");
+        return Ok(0);
+    };
+    let n = s.revoke_matching(KindId::Secret, which)?;
     println!("revoked {n} approval(s)");
     Ok(0)
 }

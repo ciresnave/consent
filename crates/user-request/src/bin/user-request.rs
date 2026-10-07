@@ -5,39 +5,11 @@
 //! (PM condition (c)). Every change is audited by the store before it is
 //! saved.
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use chrono::{Local, Utc};
-use user_request::dpapi::Dpapi;
+use user_request::locate::{dir, head_copy, PROTECTOR};
 use user_request::store::{Store, Untrusted, GATE_CLOSED_AFTER_REPAIR};
-
-const ENTROPY: &[u8] = b"overmind.user-request.v1";
-const PROTECTOR: Dpapi = Dpapi { entropy: ENTROPY };
-
-/// ⚠️ The overrides exist for this crate's tests and only in debug builds
-/// (review M4): a leaked variable must never point the panic button at
-/// another store.
-fn env_override(name: &str) -> Option<PathBuf> {
-    if cfg!(debug_assertions) {
-        std::env::var_os(name).map(PathBuf::from)
-    } else {
-        None
-    }
-}
-
-fn dir() -> Result<PathBuf, String> {
-    if let Some(d) = env_override("USER_REQUEST_DIR") {
-        return Ok(d);
-    }
-    let base = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
-    Ok(PathBuf::from(base).join("OverMind").join("user-request"))
-}
-
-fn head_copy() -> PathBuf {
-    env_override("USER_REQUEST_HEAD")
-        .unwrap_or_else(|| PathBuf::from("C:/Projects/.lane-state/user-request-audit.head"))
-}
 
 /// The store, or `None` when there is none yet. Says which store it is and
 /// whether it can be trusted. A read-only open writes nothing (review 3,

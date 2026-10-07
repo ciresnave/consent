@@ -86,8 +86,8 @@ pub trait Protector {
 
 pub const VAULT_FILE: &str = "vault.bin";
 pub const MASKS_FILE: &str = "masks.json";
-pub const KEY_FILE: &str = "approvals.key";
-pub const APPROVALS_FILE: &str = "approvals.json";
+// `approvals.key` and `approvals.json` are no longer read: approvals live in
+// the user-request store since #2b, so an old copy put back grants nothing.
 pub const AUDIT_FILE: &str = "access.log";
 
 pub fn default_dir() -> Result<PathBuf, String> {
@@ -133,21 +133,6 @@ impl<P: Protector> VaultStore<P> {
         let blob = self.protector.protect(&plain)?;
         write_atomic(&self.dir.join(VAULT_FILE), &blob)?;
         write_atomic(&self.dir.join(MASKS_FILE), &masks)
-    }
-
-    pub fn approval_key(&self) -> Result<Vec<u8>, String> {
-        let path = self.dir.join(KEY_FILE);
-        match std::fs::read(&path) {
-            Ok(blob) => self.protector.unprotect(&blob),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
-                let mut key = vec![0u8; 32];
-                getrandom::fill(&mut key).map_err(|e| format!("random key: {e}"))?;
-                write_atomic(&path, &self.protector.protect(&key)?)?;
-                Ok(key)
-            }
-            Err(e) => Err(format!("read {}: {e}", path.display())),
-        }
     }
 }
 
@@ -276,19 +261,5 @@ mod tests {
             protector: FailingProtector,
         };
         assert!(store.load().is_err());
-    }
-
-    #[test]
-    fn approval_key_is_created_once_and_stored_protected() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = VaultStore {
-            dir: dir.path().into(),
-            protector: XorProtector(0x5a),
-        };
-        let k1 = store.approval_key().unwrap();
-        let k2 = store.approval_key().unwrap();
-        assert_eq!(k1.len(), 32);
-        assert_eq!(k1, k2);
-        assert_ne!(std::fs::read(dir.path().join("approvals.key")).unwrap(), k1);
     }
 }

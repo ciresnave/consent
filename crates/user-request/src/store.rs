@@ -40,7 +40,7 @@
 //! its head copy consistently. All of this catches accidents, buggy lanes
 //! and naive edits, not that.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -203,6 +203,12 @@ struct GrantsFile {
     grants: Vec<StoredGrant>,
     /// Ids revoked; kept so an old copy of a grant cannot come back.
     revoked: BTreeSet<String>,
+    /// Pending prompts a revocation ended, with their reservation time.
+    /// Written with the tombstones, in the file written FIRST, so a
+    /// revocation whose prompts file was never written still ends them
+    /// (second review of #2b, finding 4). Absent in older files.
+    #[serde(default)]
+    ended: BTreeMap<String, DateTime<Utc>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -246,6 +252,7 @@ pub struct Store {
     seq: u64,
     grants: Vec<StoredGrant>,
     revoked: BTreeSet<String>,
+    ended: BTreeMap<String, DateTime<Utc>>,
     attempts: Vec<Attempt>,
     untrusted: Option<Untrusted>,
     /// `grants.json` was there but could not be read under this key.
@@ -345,6 +352,7 @@ impl Store {
             seq: 0,
             grants: Vec::new(),
             revoked: BTreeSet::new(),
+            ended: BTreeMap::new(),
             attempts: Vec::new(),
             untrusted,
             grants_unreadable: false,
@@ -447,6 +455,7 @@ impl Store {
                 Ok(g) => {
                     self.grants = g.grants;
                     self.revoked = g.revoked;
+                    self.ended = g.ended;
                     self.seq = seq;
                 }
                 Err(e) => {
@@ -584,6 +593,13 @@ impl Store {
                 .cloned()
                 .collect(),
             revoked: self.revoked.clone(),
+            // kept as long as the attempts themselves are
+            ended: self
+                .ended
+                .iter()
+                .filter(|(_, at)| **at > now - Duration::days(1))
+                .map(|(id, at)| (id.clone(), *at))
+                .collect(),
         };
         let attempts: Vec<&Attempt> = self
             .attempts
@@ -693,7 +709,11 @@ impl Store {
         }
         self.active_at(now).into_iter().find(|g| {
             let a = &g.approval;
-            a.kind == kind
+            // never before it was approved: a clock that was wrong ahead
+            // when the person approved must not stretch the grant once it
+            // is corrected (second review of #2b, finding 2)
+            a.approved_at <= now
+                && a.kind == kind
                 && normal_subject(&a.subject) == normal_subject(subject)
                 && match kind.scope() {
                     Scope::ThisRequester => a.requester == *requester,
@@ -749,6 +769,69 @@ impl Store {
         Ok(n)
     }
 
+    /// Revokes every grant of `kind` (about `subject` only, when given),
+    /// whoever holds it, and ends the matching pending prompts so an
+    /// approval still in flight never becomes a grant (#2b: `with-secret
+    /// revoke NAME | --all`). Returns how many grants it revoked. The same
+    /// trust rules as `revoke`.
+    pub fn revoke_matching(
+        &mut self,
+        kind: KindId,
+        subject: Option<&str>,
+    ) -> Result<usize, String> {
+        self.revoke_matching_at(kind, subject, Utc::now())
+    }
+
+    pub(crate) fn revoke_matching_at(
+        &mut self,
+        kind: KindId,
+        subject: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<usize, String> {
+        self.writable()?;
+        self.key_known()?;
+        let subject = subject.map(normal_subject);
+        let matches = |k: KindId, s: &str| {
+            k == kind
+                && subject
+                    .as_ref()
+                    .is_none_or(|want| normal_subject(s) == *want)
+        };
+        let ids: Vec<String> = self
+            .grants
+            .iter()
+            .filter(|g| !self.revoked.contains(&g.id))
+            .filter(|g| matches(g.approval.kind, &g.approval.subject))
+            .map(|g| g.id.clone())
+            .collect();
+        let pending: Vec<String> = self
+            .attempts
+            .iter()
+            .filter(|a| a.outcome == Ended::Pending && matches(a.kind, &a.subject))
+            .map(|a| a.id.clone())
+            .collect();
+        self.audit(
+            now,
+            "revoked-matching",
+            &format!(
+                "kind={kind:?} subject={} n={} ids={} pending-ended={}",
+                subject.as_deref().unwrap_or("*"),
+                ids.len(),
+                ids.join(","),
+                pending.join(",")
+            ),
+        )?;
+        let n = ids.len();
+        self.revoked.extend(ids);
+        for a in self.attempts.iter_mut().filter(|a| pending.contains(&a.id)) {
+            a.outcome = Ended::NotAsked;
+            self.ended.insert(a.id.clone(), a.at);
+        }
+        // tombstones first, like every revocation (the README's write order)
+        self.save(now)?;
+        Ok(n)
+    }
+
     fn revoke_everything(&mut self, now: DateTime<Utc>) -> Result<usize, String> {
         let ids: Vec<String> = self
             .grants
@@ -779,6 +862,7 @@ impl Store {
             .filter(|a| a.outcome == Ended::Pending)
         {
             a.outcome = Ended::NotAsked;
+            self.ended.insert(a.id.clone(), a.at);
         }
         Ok(n)
     }
@@ -826,6 +910,7 @@ impl Store {
             self.key = new_key(&self.dir, protector)?;
             self.grants.clear();
             self.revoked.clear();
+            self.ended.clear();
             self.attempts.clear();
             self.seq = 0;
             self.untrusted = Some(Untrusted::Files(was.clone()));
@@ -1061,6 +1146,11 @@ impl Store {
                 a.outcome.name()
             ));
         }
+        // ended by a revocation whose prompts file was never written
+        // (second review of #2b, finding 4)
+        if self.ended.contains_key(&a.id) {
+            return Err(format!("attempt {} already ended: revoked", a.id));
+        }
         if now >= a.at + RESERVATION_TTL {
             return Err(format!(
                 "attempt {} was reserved at {}, more than {} minutes ago",
@@ -1088,6 +1178,14 @@ impl Store {
                         "the approval says it was given at {}, outside its reservation \
                          ({} to {now})",
                         ap.approved_at, a.at
+                    ));
+                }
+                // the end the person was shown has passed: nothing is left
+                // to grant (second review of #2b, finding 3)
+                if ap.expires_at.is_some_and(|e| e <= now) {
+                    return Err(format!(
+                        "the approval ended at {} before it could be recorded",
+                        ap.expires_at.map(|e| e.to_rfc3339()).unwrap_or_default()
                     ));
                 }
                 Ended::Approved

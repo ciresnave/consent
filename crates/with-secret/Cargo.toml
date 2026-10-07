@@ -9,7 +9,6 @@ description = "Runs one command with one secret, after its owner approves via Wi
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
 getrandom = "0.4.3"
-hmac = "0.13.0"
 lane-restart = { path = "../lane-restart" }
 user-request = { path = "../user-request" }
 serde = { version = "1.0.229", features = ["derive"] }
