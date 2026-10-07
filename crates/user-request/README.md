@@ -15,8 +15,8 @@ code requesting something from a user could use them interchangeably"*.
   its kind's maximum. A grant over the maximum is **refused, never clamped**.
 - `Channel`: one way to ask. `HelloChannel` (Windows Hello) is built; `SmsChannel` and `PushChannel`
   are designed for and answer `Unavailable` until built.
-- `prompt_text`: the text the person approves. Summary and reason are clipped; the requester line
-  and the grant line never are.
+- `prompt_text`: the text the person approves: three lines, who asks, what for, and for how long.
+  The requester line and the duration line are never clipped; the subject is.
 
 ## Kinds
 
@@ -34,11 +34,26 @@ Every kind whose maximum is `Forever` must be listed here, and nowhere else may 
 A forever grant is described in the prompt as `*** FOREVER (until revoked) ***`. A grant that ends
 after the next local midnight is described as `*** LONGER THAN TODAY: ... ***`.
 
-## How a duration is chosen
+## How a duration is approved
 
-Windows Hello is a yes/no dialog with a message: it cannot ask "for how long". So the grant is
-chosen **first**, and the message the person approves names it. Hello proves the person was present
-and approved that text; it does not prove they read it.
+The requester states the duration it wants. The Windows Hello prompt names it, and the person approves
+it or cancels. CireSnave, 2026-10-07 (board 134, verbatim): *"The message in the Windows Hello prompt can be three things: 1) Who is making the request.  2) What secret they are requesting.  3) What duration they want access to that secret for.  Then I either approve the Windows Hello prompt or cancel it."*
+
+The prompt is exactly three lines:
+
+```
+Who: lane 'overmind'
+Wants: use a secret: TJ_DB
+Duration: for 1h 00m 00s, until 2026-10-07 18:38:32 -07:00
+```
+
+- **Approve** grants exactly that duration. **Cancel** is a denial: no grant, and the gate's
+  10-minute cooldown starts.
+- Nothing is typed, and there is no other window.
+- FOREVER and an end past local midnight are loud and distinct in the duration line.
+- A duration over the kind's maximum is refused before any prompt, never clamped.
+- The reason and the command are not in the prompt: the caller logs them (with-secret: its access log).
+- Hello proves the person was present and approved that text; it does not prove they read it.
 
 ## Who uses it
 
@@ -179,6 +194,5 @@ user-request audit verify    check the audit chain since its last reset, and its
   consistently needs no key at all. The chain catches accidents and naive edits, not forgery.
 - The audit log is never rotated, and every append reads it whole.
 - Coming next, per the approved plan:
-  - an approver-side chooser where FOREVER, or a date over 30 days away, must be typed;
   - durable pending requests with no timeout;
   - grants for lane-launch dialog bypasses.

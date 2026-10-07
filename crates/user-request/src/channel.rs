@@ -2,11 +2,11 @@
 //! How a request reaches a person. Every channel answers the same way, so
 //! callers can use them interchangeably.
 //!
-//! ⚠️ Windows Hello is a yes/no dialog with a message: it cannot ask "for how
-//! long". So the grant is chosen BEFORE the channel is asked (by the
-//! approver's chooser; until that lands, by the caller), and the message the
-//! person approves NAMES its absolute end. Hello proves the person was
-//! present and approved that text; it does not prove they read it.
+//! The requester states how long it wants, and the message the person
+//! approves or cancels names that duration and its absolute end (board 134,
+//! CireSnave 2026-10-07: approve it or cancel it; nothing is typed). Hello
+//! proves the person was present and approved that text; it does not prove
+//! they read it.
 
 use std::time::Duration;
 
@@ -68,9 +68,10 @@ fn clip(s: &str, max: usize) -> String {
     }
 }
 
-/// The text the person approves. Who, Grant and Covers come first and are
-/// never clipped; everything the requester supplied after them is cleaned
-/// and clipped (PM condition (f); review I2, I4).
+/// The text the person approves: exactly who asks, what for, and for how
+/// long (board 134, CireSnave 2026-10-07: "three things"). The reason and
+/// the command are not in it; the caller logs them. Who and Duration are
+/// never clipped; the subject is cleaned and clipped (review I2).
 pub fn prompt_text(req: &Request, grant: &Grant, now: DateTime<Utc>) -> String {
     let r = &req.requester;
     let role = clean(&r.role);
@@ -80,13 +81,10 @@ pub fn prompt_text(req: &Request, grant: &Grant, now: DateTime<Utc>) -> String {
         format!("{role} (pid {}) - NOT a registered lane", r.claude_pid)
     };
     format!(
-        "Who: {who}\nGrant: {}\nCovers: {}\nRequest: {}: {}\nWhat: {}\nWhy: {}",
-        grant.describe(now),
-        req.kind.covers(),
+        "Who: {who}\nWants: {}: {}\nDuration: {}",
         req.kind.name(),
         clip(&clean(&req.subject), 200),
-        clip(&clean(&req.summary), 300),
-        clip(&clean(&req.reason), 300),
+        grant.describe(now),
     )
 }
 
@@ -365,42 +363,65 @@ mod tests {
         );
         let text = prompt_text(&r, &Grant::Forever, t0());
         let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "{text}");
         assert!(lines[0].starts_with("Who: lane 'evil"), "{text}");
-        assert!(lines[1].starts_with("Grant: *** FOREVER"), "{text}");
-        assert_eq!(
-            lines.iter().filter(|l| l.starts_with("Who:")).count(),
-            1,
-            "{text}"
-        );
-        assert_eq!(
-            lines.iter().filter(|l| l.starts_with("Grant:")).count(),
-            1,
-            "{text}"
-        );
+        assert!(lines[1].starts_with("Wants: "), "{text}");
+        assert!(lines[2].starts_with("Duration: *** FOREVER"), "{text}");
         assert!(!text.contains('\u{202E}'), "a bidi override survived");
     }
 
     #[test]
-    fn long_requester_text_is_clipped_after_the_lines_that_never_are() {
+    fn a_long_subject_is_clipped_and_the_duration_never_is() {
         let long = "x".repeat(5000);
         let r = req(KindId::LaneDialogBypass, "overmind", &long, &long, true);
         let text = prompt_text(&r, &Grant::Forever, t0());
+        assert!(text.starts_with("Who: lane 'overmind'\nWants: "), "{text}");
         assert!(
-            text.starts_with("Who: lane 'overmind'\nGrant: *** FOREVER"),
+            text.ends_with("\nDuration: *** FOREVER (until revoked) ***"),
             "{text}"
         );
-        assert!(text.len() < 1500, "not clipped: {}", text.len());
+        assert!(text.len() < 500, "not clipped: {}", text.len());
         assert!(text.contains('…'));
     }
 
-    /// Review I4: the person sees who an approval covers.
+    /// Board 134, CireSnave 2026-10-07 (verbatim): "The message in the
+    /// Windows Hello prompt can be three things: 1) Who is making the
+    /// request.  2) What secret they are requesting.  3) What duration they
+    /// want access to that secret for."
     #[test]
-    fn the_prompt_says_who_the_approval_covers() {
-        let any = prompt_text(&bypass(), &Grant::Forever, t0());
-        assert!(any.contains("Covers: EVERY lane"), "{any}");
-        let r = req(KindId::Secret, "overmind", "S", "x", true);
-        let one = prompt_text(&r, &Grant::for_duration(Span::minutes(5)), t0());
-        assert!(one.contains("Covers: this lane only"), "{one}");
+    fn the_prompt_is_exactly_who_what_and_how_long() {
+        let r = req(KindId::Secret, "overmind", "TJ_DB", "run: psql", true);
+        let g = Grant::for_duration(Span::hours(1));
+        assert_eq!(
+            prompt_text(&r, &g, t0()),
+            format!(
+                "Who: lane 'overmind'\nWants: use a secret: TJ_DB\nDuration: {}",
+                g.describe(t0())
+            )
+        );
+        assert!(g.describe(t0()).starts_with("for 1h 00m 00s, until "));
+    }
+
+    /// FOREVER stays loud and distinct, in the duration line itself.
+    #[test]
+    fn a_forever_prompt_says_so_loudly() {
+        assert_eq!(
+            prompt_text(&bypass(), &Grant::Forever, t0()),
+            "Who: lane 'overmind'\n\
+             Wants: auto-answer a lane startup dialog: dialog\n\
+             Duration: *** FOREVER (until revoked) ***"
+        );
+    }
+
+    /// He asked for three things only: the reason and the command go to the
+    /// audit log, not the prompt.
+    #[test]
+    fn the_prompt_carries_no_reason_or_summary() {
+        let mut r = req(KindId::Secret, "overmind", "S", "x", true);
+        r.summary = "run: psql -f seed.sql".into();
+        r.reason = "seed the prod db".into();
+        let text = prompt_text(&r, &Grant::for_duration(Span::minutes(5)), t0());
+        assert!(!text.contains("psql") && !text.contains("seed"), "{text}");
     }
 
     #[test]

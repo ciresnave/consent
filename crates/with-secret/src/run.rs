@@ -538,9 +538,26 @@ mod tests {
             .to_string();
         assert!(prompt.contains(&shown), "{prompt}");
         assert!(prompt.contains("LONGER THAN TODAY"), "{prompt}");
-        assert!(prompt.contains("run: psql"), "{prompt}");
-        assert!(prompt.contains("seed the prod db"), "{prompt}");
-        assert!(prompt.contains("Covers: this lane only"), "{prompt}");
+    }
+
+    /// Board 134 (CireSnave, 2026-10-07): the prompt is who, which secret
+    /// and how long. The command and the reason are in the access log.
+    #[test]
+    fn the_command_and_reason_go_to_the_log_not_the_prompt() {
+        let d = store_dir();
+        let ch = hello(ConsentOutcome::Approved);
+        let mut log = vec![];
+        run(&d, &ch, &args(&["psql"]), &mut log).unwrap();
+        let prompt = &asked(&ch)[0];
+        assert_eq!(prompt.lines().count(), 3, "{prompt}");
+        assert!(prompt.contains("Wants: use a secret: TJ_DB"), "{prompt}");
+        assert!(!prompt.contains("psql"), "{prompt}");
+        assert!(!prompt.contains("seed the prod db"), "{prompt}");
+        assert!(
+            log.iter()
+                .all(|e| e.command == "psql" && e.reason == "seed the prod db"),
+            "{log:?}"
+        );
     }
 
     #[test]

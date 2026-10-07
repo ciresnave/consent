@@ -26,8 +26,11 @@ Copied in full from `WITH-SECRET-DESIGN.md` §3:
   split, base64-encoded) passes through.
 - An approval covers its secret for the whole window, not one command. Until the window ends,
   the approved requester can run other commands with the same secret. Per-command scoping was
-  considered and declined by the PM on 2026-10-01; the Hello prompt (naming the command and
-  reason) and a short `--window-mins` are the controls. This is an accepted limit.
+  considered and declined by the PM on 2026-10-01; the Hello prompt and a short `--window-mins`
+  are the controls. This is an accepted limit.
+  - ⚠️ Since board 134 (2026-10-07) the prompt names who, which secret and how long, but **not the
+    command or the reason** (CireSnave asked for those three things only). They are in the access
+    log. So the person approves the secret for a duration, not a command.
 
 Least privilege (e) limits how much damage a leaked secret can do. It is a procedure for
 CireSnave and the PM when they provision each credential, and no tool can enforce it.
@@ -79,8 +82,9 @@ C:/Projects/.claude-hooks/with-secret.exe NAME --reason "why, in at least 10 cha
 - ⚠️ From Git Bash, prefix `MSYS_NO_PATHCONV=1` when the command has slash flags such as
   `cmd /c`. Otherwise MSYS rewrites `/c` to `C:/`, cmd starts interactively and does nothing, and
   CireSnave approves a command that is not the one you meant (measured on spike day, 2026-10-01).
-- The prompt on CireSnave's screen names the secret, the lane, the command, the reason and when
-  the approval would expire. Nothing is released until he approves.
+- The Windows Hello prompt on CireSnave's screen says three things: who asks (the lane), which
+  secret, and for how long, with the end time. He approves or cancels; nothing is released until he
+  approves. The command and the reason are written to the access log, not shown in the prompt.
 - The secret is set as `VAR` in that one child's environment and nowhere else. The child's stdout
   and stderr are masked: the value prints as `[with-secret:NAME]`.
 - One approval covers **one lane, one secret**.

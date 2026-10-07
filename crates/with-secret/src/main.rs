@@ -88,6 +88,8 @@ with-secret NAME --reason \"why\" [--wait-secs N] [--window-mins M] -- <command>
     void on lane restart, until the end the prompt shows: --window-mins M from
     now if given (however long; past today it is shown LOUDLY), else midnight.
     Call it from a lane's Bash tool with timeout 600000: the prompt waits up to 9 min.
+    The prompt names the lane, the secret and the duration; the command and the
+    reason go to the access log. Cancel denies.
     Approvals live in the user-request store; prompts pass its gate (no re-asking
     within 10 min of a refusal, at most 6 prompts per lane per hour).
 with-secret vault list | set NAME --env VAR --access read|write [--rotate-by YYYY-MM-DD]

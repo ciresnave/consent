@@ -82,14 +82,6 @@ impl KindId {
             KindId::LaneDialogBypass => Scope::AnyRequester,
         }
     }
-
-    /// Who an approval covers, in the words the person is shown.
-    pub fn covers(self) -> &'static str {
-        match self.scope() {
-            Scope::ThisRequester => "this lane only, until it restarts",
-            Scope::AnyRequester => "EVERY lane, not just the one asking",
-        }
-    }
 }
 
 /// What the approver grants. A request-side choice: once approved, what is
