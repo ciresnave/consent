@@ -1,0 +1,21 @@
+[package]
+name = "user-request"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Ask a person to approve something, through an interchangeable channel (Windows Hello first), with an approver-chosen grant. See crates/user-request/README.md."
+
+[dependencies]
+chrono = { version = "0.4.45", features = ["serde"] }
+serde = { version = "1.0.229", features = ["derive"] }
+
+# Windows-only: Windows Hello. Every use is cfg(windows); windows-future does
+# not compile on other targets, and CI also builds on Ubuntu.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Foundation", "Security_Credentials_UI", "Win32_Foundation", "Win32_System_WinRT", "Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
+windows-future = "0.3.2"
+
+[dev-dependencies]
+# real time zones, for the DST-gap tests (review of #1)
+chrono-tz = "0.10.4"

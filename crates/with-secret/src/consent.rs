@@ -19,17 +19,7 @@ pub struct ConsentRequest {
     pub expires_at: DateTime<Utc>,
 }
 
-#[derive(Debug, PartialEq)]
-pub enum ConsentOutcome {
-    Approved,
-    Denied,
-    TimedOut,
-    Unavailable(String),
-}
-
-pub trait Consent {
-    fn ask(&self, prompt: &str, wait: std::time::Duration) -> ConsentOutcome;
-}
+pub use user_request::consent::{Consent, ConsentOutcome};
 
 fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max {

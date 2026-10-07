@@ -8,16 +8,9 @@ use std::path::Path;
 
 use lane_restart::facts::ProcEntry;
 use lane_restart::state::LaneState;
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Requester {
-    pub role: String,
-    pub session_id: String,
-    pub claude_pid: u32,
-    pub claude_start_secs: u64,
-    pub managed: bool,
-}
+/// Moved to `user-request`, unchanged: with-secret's approval cache signs
+/// its serialised form.
+pub use user_request::Requester;
 
 fn is_claude(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
