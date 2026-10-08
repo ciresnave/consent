@@ -605,3 +605,31 @@ fn a_request_cannot_carry_unbounded_text() {
     let r = req("overmind", &"s".repeat(MAX_SUBJECT_CHARS));
     assert!(s.submit_at(&r, &hour(), "h", t0()).is_ok());
 }
+
+/// user-request #5: two lanes' dialog requests are two pending requests, and
+/// one that names no lane is refused before anything is stored.
+#[test]
+fn pending_lane_dialog_requests_are_per_lane() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    let lane = |l: &str| Request {
+        kind: KindId::LaneDialogBypass,
+        ..req(
+            "pm",
+            &crate::request::lane_dialog_subject(l, "trust").unwrap(),
+        )
+    };
+    let a = s
+        .submit_at(&lane("fuel"), &Grant::Forever, "h", t0())
+        .unwrap();
+    let b = s
+        .submit_at(&lane("overmind"), &Grant::Forever, "h", t0())
+        .unwrap();
+    assert_ne!(a, b);
+    let bare = Request {
+        kind: KindId::LaneDialogBypass,
+        ..req("pm", "trust")
+    };
+    assert!(s.submit_at(&bare, &Grant::Forever, "h", t0()).is_err());
+    assert_eq!(s.pending().len(), 2);
+}

@@ -23,13 +23,13 @@ code requesting something from a user could use them interchangeably"*.
 | kind | maximum grant | scope |
 |---|---|---|
 | `Secret` (with-secret) | any **finite** length: the requester states it, the person sees the end (loudly past today) and may refuse (board 134); never forever (PM ruling) | this requester only; a lane restart voids it |
-| `LaneDialogBypass` (lane-restart) | **FOREVER** | any requester |
+| `LaneDialogBypass` (lane-restart) | **FOREVER** | one lane's one dialog (`lane 'fuel', dialog 'trust'`, shown whole in the prompt); any requester may use it |
 
 ### Kinds that can be granted forever
 
 Every kind whose maximum is `Forever` must be listed here, and nowhere else may one be added:
 
-- `LaneDialogBypass`: auto-answering a lane's startup dialog.
+- `LaneDialogBypass`: auto-answering ONE lane's startup dialog. The lane is part of the subject; a grant for one lane never answers another's, and a subject naming no lane is refused.
 
 A forever grant is described in the prompt as `*** FOREVER (until revoked) ***`. A grant that ends
 after the next local midnight is described as `*** LONGER THAN TODAY: ... ***`.

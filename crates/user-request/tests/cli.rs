@@ -60,7 +60,11 @@ fn seed(dir: &Path) -> (String, String) {
             .unwrap()
             .unwrap()
     };
-    let forever = grant(mk(KindId::LaneDialogBypass, "trust-dialog", None));
+    let forever = grant(mk(
+        KindId::LaneDialogBypass,
+        &user_request::request::lane_dialog_subject("fuel", "trust-dialog").unwrap(),
+        None,
+    ));
     // a Secret may not outlive local midnight
     let soon = (now + Duration::minutes(5)).min(next_local_midnight(now));
     let timed = grant(mk(KindId::Secret, "db", Some(soon)));

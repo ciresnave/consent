@@ -237,6 +237,8 @@ fn revoke_ends_secrets_grants_in_the_store_and_nothing_else() {
     use user_request::request::{Approval, KindId, Requester};
     use user_request::store::{AuditOnly, Store};
 
+    // A lane-bound LaneDialogBypass subject (user-request #5).
+    const FUEL_TRUST: &str = "lane 'fuel', dialog 'trust'";
     let scratch = tempfile::tempdir().unwrap().keep();
     let (dir, head) = (scratch.join("user-request"), scratch.join("head"));
     let lane = |role: &str| Requester {
@@ -263,7 +265,7 @@ fn revoke_ends_secrets_grants_in_the_store_and_nothing_else() {
     grant(KindId::Secret, "TJ_DB", &lane("humboldt"));
     grant(KindId::Secret, "TJ_DB", &lane("fuel"));
     grant(KindId::Secret, "OTHER", &lane("humboldt"));
-    let bypass = grant(KindId::LaneDialogBypass, "TJ_DB", &lane("pm"));
+    let bypass = grant(KindId::LaneDialogBypass, FUEL_TRUST, &lane("pm"));
     let with_secret = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_with-secret"))
             .env("WITH_SECRET_DIR", scratch.join("vault"))
@@ -290,13 +292,16 @@ fn revoke_ends_secrets_grants_in_the_store_and_nothing_else() {
     let left = active();
     assert_eq!(left.len(), 2, "{left:?}");
     assert!(left.contains(&(KindId::Secret, "OTHER".into())));
-    assert!(left.contains(&(KindId::LaneDialogBypass, "TJ_DB".into())));
+    assert!(left.contains(&(KindId::LaneDialogBypass, FUEL_TRUST.into())));
     let out = with_secret(&["revoke", "--all"]);
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
         "revoked 1 approval(s)"
     );
-    assert_eq!(active(), vec![(KindId::LaneDialogBypass, "TJ_DB".into())]);
+    assert_eq!(
+        active(),
+        vec![(KindId::LaneDialogBypass, FUEL_TRUST.into())]
+    );
     let s = Store::open(&dir, &PROTECTOR, Some(head.clone())).unwrap();
     assert_eq!(s.active()[0].id, bypass);
 }

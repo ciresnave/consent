@@ -138,6 +138,7 @@ impl Store {
         self.writable()?;
         self.trustworthy()?;
         check_bound_hash(bound_hash)?;
+        req.check_subject()?;
         let role = req.requester.role.as_str();
         if role.chars().count() > MAX_ROLE_CHARS {
             return Err(format!(

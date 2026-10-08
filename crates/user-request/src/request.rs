@@ -84,6 +84,38 @@ impl KindId {
     }
 }
 
+/// The longest a lane name or dialog id in a lane-dialog subject may be.
+pub const MAX_LANE_DIALOG_PART_CHARS: usize = 64;
+
+fn plain_part(p: &str) -> bool {
+    !p.is_empty()
+        && p.chars().count() <= MAX_LANE_DIALOG_PART_CHARS
+        && p.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// The subject of a `LaneDialogBypass` request: ONE lane's ONE dialog (PM
+/// ruling on user-request #5, 2026-10-08: a FOREVER grant is the narrowest
+/// thing that works, so it never covers every lane). The person is shown it
+/// whole. Both parts are plain (no quote or comma), so neither can forge the
+/// other.
+pub fn lane_dialog_subject(lane: &str, dialog: &str) -> Result<String, String> {
+    if !plain_part(lane) || !plain_part(dialog) {
+        return Err(format!(
+            "lane and dialog must each be 1 to {MAX_LANE_DIALOG_PART_CHARS} characters of letters, digits, '-', '_' or '.'"
+        ));
+    }
+    Ok(format!("lane '{lane}', dialog '{dialog}'"))
+}
+
+/// The (lane, dialog) a subject names, if it is exactly the shape
+/// `lane_dialog_subject` makes.
+pub fn parse_lane_dialog_subject(subject: &str) -> Option<(&str, &str)> {
+    let rest = subject.strip_prefix("lane '")?.strip_suffix("'")?;
+    let (lane, dialog) = rest.split_once("', dialog '")?;
+    (plain_part(lane) && plain_part(dialog)).then_some((lane, dialog))
+}
+
 /// What the approver grants. A request-side choice: once approved, what is
 /// kept is the ABSOLUTE end the person was shown (`Approval::expires_at`),
 /// never this relative form.
@@ -205,6 +237,19 @@ pub struct Request {
     pub requester: Requester,
     /// Why, in the requester's words (cleaned and clipped in the prompt).
     pub reason: String,
+}
+
+impl Request {
+    /// Is the subject one this kind accepts? A `LaneDialogBypass` must name a
+    /// lane; other kinds take any subject.
+    pub fn check_subject(&self) -> Result<(), String> {
+        match self.kind {
+            KindId::LaneDialogBypass if parse_lane_dialog_subject(&self.subject).is_none() => {
+                Err("a lane dialog request must name one lane and one dialog".into())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 /// What an approval grants, with the ABSOLUTE end the person was shown, so
@@ -408,5 +453,52 @@ mod tests {
             let listed = section.contains(&format!("`{k:?}`"));
             assert_eq!(listed, k.max() == MaxGrant::Forever, "{k:?}");
         }
+    }
+
+    /// PM ruling on user-request #5 (2026-10-08): a LaneDialogBypass grant is
+    /// for ONE lane. The lane is part of the subject the person is shown.
+    #[test]
+    fn a_lane_dialog_subject_names_the_lane_and_the_dialog() {
+        let s = lane_dialog_subject("fuel", "trust").unwrap();
+        assert_eq!(s, "lane 'fuel', dialog 'trust'");
+        assert_eq!(parse_lane_dialog_subject(&s), Some(("fuel", "trust")));
+    }
+
+    #[test]
+    fn a_lane_dialog_subject_cannot_forge_another_lane_or_omit_it() {
+        assert!(lane_dialog_subject("fuel', dialog 'x", "trust").is_err());
+        assert!(lane_dialog_subject("", "trust").is_err());
+        assert!(lane_dialog_subject("fuel", "").is_err());
+        assert!(lane_dialog_subject(&"a".repeat(65), "trust").is_err());
+        // a bare handler id (the pre-#5 subject) names no lane
+        assert_eq!(parse_lane_dialog_subject("trust"), None);
+        assert_eq!(
+            parse_lane_dialog_subject("lane 'a', dialog 'b', dialog 'c'"),
+            None
+        );
+    }
+
+    #[test]
+    fn only_a_lane_dialog_request_must_name_a_lane() {
+        let r = |kind, subject: &str| Request {
+            kind,
+            subject: subject.into(),
+            summary: String::new(),
+            requester: Requester {
+                role: "pm".into(),
+                session_id: "s".into(),
+                claude_pid: 1,
+                claude_start_secs: 1,
+                managed: true,
+            },
+            reason: String::new(),
+        };
+        assert!(r(KindId::LaneDialogBypass, "trust")
+            .check_subject()
+            .is_err());
+        assert!(r(KindId::LaneDialogBypass, "lane 'fuel', dialog 'trust'")
+            .check_subject()
+            .is_ok());
+        assert!(r(KindId::Secret, "TJ_DB").check_subject().is_ok());
     }
 }

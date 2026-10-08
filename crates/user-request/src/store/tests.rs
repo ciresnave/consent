@@ -46,6 +46,11 @@ fn mins(m: i64) -> DateTime<Utc> {
     t0() + Duration::minutes(m)
 }
 
+/// A lane-bound subject (user-request #5): the dialog named `d`, on lane fuel.
+fn lane_subject(d: &str) -> String {
+    crate::request::lane_dialog_subject("fuel", d).unwrap()
+}
+
 fn who(role: &str, session: &str) -> Requester {
     Requester {
         role: role.into(),
@@ -144,11 +149,21 @@ fn an_any_requester_grant_covers_every_lane_and_forever_never_expires() {
     let mut s = open(d.path());
     add(
         &mut s,
-        approval(KindId::LaneDialogBypass, "trust", &who("pm", "s"), None),
+        approval(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("pm", "s"),
+            None,
+        ),
     );
     let later = t0() + Duration::days(3650);
     assert!(s
-        .find_at(KindId::LaneDialogBypass, "trust", &who("fuel", "x"), later)
+        .find_at(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("fuel", "x"),
+            later
+        )
         .is_some());
 }
 
@@ -215,7 +230,12 @@ fn a_revoked_grant_never_comes_back() {
     let mut s = open(d.path());
     let g = add(
         &mut s,
-        approval(KindId::LaneDialogBypass, "trust", &who("pm", "s"), None),
+        approval(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("pm", "s"),
+            None,
+        ),
     );
     s.save(t0()).unwrap();
     drop(s);
@@ -227,7 +247,12 @@ fn a_revoked_grant_never_comes_back() {
     // a lane that records an attempt afterwards does not resurrect it
     prompt(d.path(), &who("fuel", "x"), "S", "approved", t0()).unwrap();
     assert!(open(d.path())
-        .find_at(KindId::LaneDialogBypass, "trust", &who("o", "s"), t0())
+        .find_at(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("o", "s"),
+            t0()
+        )
         .is_none());
     // nor does putting the old, validly signed file back
     std::fs::write(d.path().join("grants.json"), before).unwrap();
@@ -238,8 +263,13 @@ fn a_revoked_grant_never_comes_back() {
         s.untrusted
     );
     assert!(
-        s.find_at(KindId::LaneDialogBypass, "trust", &who("o", "s"), t0())
-            .is_none(),
+        s.find_at(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("o", "s"),
+            t0()
+        )
+        .is_none(),
         "{g}"
     );
 }
@@ -825,7 +855,12 @@ fn a_whole_directory_rollback_is_untrusted() {
     let mut s = open(d.path());
     let g = add(
         &mut s,
-        approval(KindId::LaneDialogBypass, "trust", &who("pm", "s"), None),
+        approval(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("pm", "s"),
+            None,
+        ),
     );
     drop(s);
     let old = snapshot(d.path());
@@ -841,7 +876,12 @@ fn a_whole_directory_rollback_is_untrusted() {
         s.untrusted
     );
     assert!(s
-        .find_at(KindId::LaneDialogBypass, "trust", &who("x", "y"), t0())
+        .find_at(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("x", "y"),
+            t0()
+        )
         .is_none());
     assert!(s
         .may_ask_at(&who("o", "s"), KindId::Secret, "DB", mins(1), &AuditOnly)
@@ -874,11 +914,21 @@ fn a_rolled_back_grant_is_not_laundered_by_a_later_revoke() {
     let mut s = open(d.path());
     let a = add(
         &mut s,
-        approval(KindId::LaneDialogBypass, "trust", &who("pm", "s"), None),
+        approval(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("pm", "s"),
+            None,
+        ),
     );
     let b = add(
         &mut s,
-        approval(KindId::LaneDialogBypass, "other", &who("pm", "s"), None),
+        approval(
+            KindId::LaneDialogBypass,
+            &lane_subject("other"),
+            &who("pm", "s"),
+            None,
+        ),
     );
     drop(s);
     let old = std::fs::read(d.path().join("grants.json")).unwrap();
@@ -892,11 +942,21 @@ fn a_rolled_back_grant_is_not_laundered_by_a_later_revoke() {
     let mut s = open(d.path());
     assert!(s.untrusted.is_some(), "the revoke re-anchored the rollback");
     assert!(s
-        .find_at(KindId::LaneDialogBypass, "trust", &who("x", "y"), t0())
+        .find_at(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("x", "y"),
+            t0()
+        )
         .is_none());
     s.repair_at(t0(), &Xor(7)).unwrap();
     assert!(s
-        .find_at(KindId::LaneDialogBypass, "trust", &who("x", "y"), t0())
+        .find_at(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("x", "y"),
+            t0()
+        )
         .is_none());
 }
 
@@ -1235,7 +1295,12 @@ fn a_repair_whose_save_fails_leaves_the_store_untrusted() {
     let mut s = open(d.path());
     add(
         &mut s,
-        approval(KindId::LaneDialogBypass, "trust", &who("pm", "s"), None),
+        approval(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("pm", "s"),
+            None,
+        ),
     );
     drop(s);
     std::fs::remove_file(d.path().join("head.copy")).unwrap();
@@ -1253,7 +1318,12 @@ fn a_repair_whose_save_fails_leaves_the_store_untrusted() {
     let s = open(d.path());
     assert!(s.untrusted.is_some(), "{:?}", s.verify_audit());
     assert!(s
-        .find_at(KindId::LaneDialogBypass, "trust", &who("x", "y"), t0())
+        .find_at(
+            KindId::LaneDialogBypass,
+            &lane_subject("trust"),
+            &who("x", "y"),
+            t0()
+        )
         .is_none());
 }
 
@@ -1973,7 +2043,10 @@ fn revoke_matching_ends_one_kinds_grants_and_pending_prompts() {
         &mut s,
         approval(KindId::Secret, "OTHER", &a, Some(mins(60))),
     );
-    let bypass = add(&mut s, approval(KindId::LaneDialogBypass, "DB", &a, None));
+    let bypass = add(
+        &mut s,
+        approval(KindId::LaneDialogBypass, &lane_subject("DB"), &a, None),
+    );
     let in_flight = reserve(&mut s, &a, "DB", t0());
     let other_flight = reserve(&mut s, &a, "OTHER", t0());
     assert_eq!(
@@ -2146,4 +2219,49 @@ fn verify_reports_a_lagging_head_copy() {
     s.audit(mins(6), "granted", "y").unwrap();
     std::fs::write(&head, stale).unwrap();
     assert_eq!(s.verify_audit().unwrap().head_behind, 2);
+}
+
+fn fuel_trust() -> String {
+    crate::request::lane_dialog_subject("fuel", "trust").unwrap()
+}
+
+/// user-request #5: a grant for lane X never answers lane Y's dialog.
+#[test]
+fn a_lane_dialog_grant_for_one_lane_never_answers_another_lane() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    add(
+        &mut s,
+        approval(
+            KindId::LaneDialogBypass,
+            &fuel_trust(),
+            &who("pm", "s"),
+            None,
+        ),
+    );
+    let other = crate::request::lane_dialog_subject("overmind", "trust").unwrap();
+    assert!(s
+        .find_at(
+            KindId::LaneDialogBypass,
+            &fuel_trust(),
+            &who("pm", "s"),
+            t0()
+        )
+        .is_some());
+    assert!(s
+        .find_at(KindId::LaneDialogBypass, &other, &who("pm", "s"), t0())
+        .is_none());
+}
+
+/// user-request #5: a handler-id-only subject (the pre-#5 shape) names no
+/// lane, so it is neither stored nor matched.
+#[test]
+fn an_unbound_lane_dialog_approval_is_refused_and_never_matches() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    let bare = approval(KindId::LaneDialogBypass, "trust", &who("pm", "s"), None);
+    assert!(s.add(bare, t0()).is_err());
+    assert!(s
+        .find_at(KindId::LaneDialogBypass, "trust", &who("fuel", "x"), t0())
+        .is_none());
 }

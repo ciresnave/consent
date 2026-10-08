@@ -667,6 +667,11 @@ impl Store {
     /// (review 3, I4). Only `resolve` calls it. The caller saves.
     fn add(&mut self, approval: Approval, now: DateTime<Utc>) -> Result<String, String> {
         self.trustworthy()?;
+        if approval.kind == KindId::LaneDialogBypass
+            && crate::request::parse_lane_dialog_subject(&approval.subject).is_none()
+        {
+            return Err("a lane dialog approval must name one lane and one dialog".into());
+        }
         let grant = approval.expires_at.map_or(Grant::Forever, Grant::Until);
         if !grant.within(
             approval.kind.max(),
@@ -716,6 +721,11 @@ impl Store {
         // the chain is checked here too, so a reset since `open` is seen at
         // once (review 3, I5)
         if self.trustworthy().is_err() || matches!(self.check_chain(), Err(ChainError::Broken(_))) {
+            return None;
+        }
+        if kind == KindId::LaneDialogBypass
+            && crate::request::parse_lane_dialog_subject(subject).is_none()
+        {
             return None;
         }
         self.active_at(now).into_iter().find(|g| {

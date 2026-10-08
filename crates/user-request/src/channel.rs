@@ -112,6 +112,9 @@ impl<C: Consent> Channel for HelloChannel<C> {
                 "requester role is longer than {MAX_ROLE_CHARS} characters"
             ));
         }
+        if let Err(e) = req.check_subject() {
+            return Outcome::Refused(e);
+        }
         let shown_at = (self.clock)();
         if !grant.within(req.kind.max(), shown_at.with_timezone(&Local)) {
             return Outcome::Refused(format!(
@@ -235,7 +238,7 @@ mod tests {
         req(
             KindId::LaneDialogBypass,
             "overmind",
-            "dialog",
+            "lane 'fuel', dialog 'trust'",
             "because",
             true,
         )
@@ -257,7 +260,7 @@ mod tests {
                 );
                 assert_eq!(
                     (a.kind, a.subject.as_str()),
-                    (KindId::LaneDialogBypass, "dialog")
+                    (KindId::LaneDialogBypass, "lane 'fuel', dialog 'trust'")
                 );
             }
             o => panic!("{o:?}"),
@@ -408,7 +411,7 @@ mod tests {
         assert_eq!(
             prompt_text(&bypass(), &Grant::Forever, t0()),
             "Who: lane 'overmind'\n\
-             Wants: auto-answer a lane startup dialog: dialog\n\
+             Wants: auto-answer a lane startup dialog: lane 'fuel', dialog 'trust'\n\
              Duration: *** FOREVER (until revoked) ***"
         );
     }
@@ -452,5 +455,19 @@ mod tests {
                 Outcome::Unavailable(_)
             ));
         }
+    }
+
+    /// user-request #5: the lane being answered is in what the person sees,
+    /// and a request that names none is refused before any prompt.
+    #[test]
+    fn a_lane_dialog_prompt_names_the_lane_and_an_unbound_one_is_refused() {
+        let subject = crate::request::lane_dialog_subject("fuel", "trust").unwrap();
+        let bound = req(KindId::LaneDialogBypass, "pm", &subject, "r", true);
+        let g = Grant::Forever;
+        assert!(prompt_text(&bound, &g, t0()).contains("lane 'fuel', dialog 'trust'"));
+        let ch = channel(|| ConsentOutcome::Approved, Span::minutes(1));
+        assert!(matches!(ch.present(&bound, &g, WAIT), Outcome::Approved(_)));
+        let bare = req(KindId::LaneDialogBypass, "pm", "trust", "r", true);
+        assert!(matches!(ch.present(&bare, &g, WAIT), Outcome::Refused(_)));
     }
 }
