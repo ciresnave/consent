@@ -374,19 +374,21 @@ fn hook(kind: Option<&str>) -> ExitCode {
             }
         }
         Some("post-tool-use") => {
-            let masks: Vec<HashMask> = match data_dir().map(|d| d.join(MASKS_FILE)) {
-                Ok(p) => match std::fs::read(&p) {
-                    Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
-                        eprintln!(
-                            "with-secret hook: {} unreadable ({e}); not masking",
-                            p.display()
-                        );
-                        Vec::new()
-                    }),
-                    Err(_) => Vec::new(),
-                },
+            // Fails open, like every hook here: an unreadable masks file
+            // means no masking for this call, never a blocked tool.
+            let masks: Vec<HashMask> = match store().and_then(|s| {
+                if let Err(e) = s.migrate_legacy_masks() {
+                    eprintln!("with-secret hook: sealing the legacy masks failed ({e}); masking from them anyway");
+                }
+                s.load_masks()
+            }) {
+                Ok(Some(b)) => serde_json::from_slice(&b).unwrap_or_else(|e| {
+                    eprintln!("with-secret hook: {MASKS_FILE} is not valid ({e}); not masking");
+                    Vec::new()
+                }),
+                Ok(None) => Vec::new(),
                 Err(e) => {
-                    eprintln!("with-secret hook: {e}");
+                    eprintln!("with-secret hook: {e}; not masking");
                     Vec::new()
                 }
             };

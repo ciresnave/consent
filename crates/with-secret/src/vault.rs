@@ -85,7 +85,16 @@ pub trait Protector {
 }
 
 pub const VAULT_FILE: &str = "vault.bin";
-pub const MASKS_FILE: &str = "masks.json";
+/// The hook's masks, protected like the vault. ⚠️ Row 5: they used to sit in
+/// `masks.json` as plain salted SHA-256, so a COPY of that file was a fast
+/// offline check of guessed values. A slow KDF was not an option: the hook
+/// hashes every window of every tool output.
+pub const MASKS_FILE: &str = "masks.bin";
+/// The pre-0.7 plaintext masks file. Read only to migrate it, then deleted.
+pub const LEGACY_MASKS_FILE: &str = "masks.json";
+/// Where a pre-0.7 write of `masks.json` staged its PLAINTEXT; a crash could
+/// leave it behind.
+pub const LEGACY_MASKS_TMP: &str = "masks.tmp";
 // `approvals.key` and `approvals.json` are no longer read: approvals live in
 // the user-request store since #2b, so an old copy put back grants nothing.
 pub const AUDIT_FILE: &str = "access.log";
@@ -96,9 +105,17 @@ pub fn default_dir() -> Result<PathBuf, String> {
 }
 
 /// Write via a sibling temp file and rename, so a crash never leaves a
-/// half-written vault - which `load` would then refuse.
+/// half-written vault - which `load` would then refuse. ⚠️ The temp name is
+/// unique per write: hooks run concurrently, and with one fixed name a second
+/// writer could truncate the file the first had just renamed into place.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
+    let mut nonce = [0u8; 8];
+    getrandom::fill(&mut nonce).map_err(|e| format!("random temp name: {e}"))?;
+    let tmp = path.with_extension(format!(
+        "{}.{:016x}.tmp",
+        std::process::id(),
+        u64::from_le_bytes(nonce)
+    ));
     std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))
 }
@@ -124,15 +141,71 @@ impl<P: Protector> VaultStore<P> {
             .map_err(|e| format!("the vault decrypted but is not valid: {e}"))
     }
 
-    /// `masks` is the already-serialised `masks.json` (`mask::masks_json`), so
-    /// this module never depends on `mask.rs`.
+    /// `masks` is the already-serialised masks list (`mask::masks_json`), so
+    /// this module never depends on `mask.rs`. It is stored protected.
     pub fn save(&self, vault: &Vault, masks: Vec<u8>) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
         let plain = serde_json::to_vec(vault).map_err(|e| e.to_string())?;
         let blob = self.protector.protect(&plain)?;
         write_atomic(&self.dir.join(VAULT_FILE), &blob)?;
-        write_atomic(&self.dir.join(MASKS_FILE), &masks)
+        write_atomic(&self.dir.join(MASKS_FILE), &self.protector.protect(&masks)?)?;
+        remove_if_present(&self.dir.join(LEGACY_MASKS_FILE))
+    }
+
+    /// Seal a legacy `masks.json` into `masks.bin` and delete it, along with
+    /// the plaintext `masks.tmp` a crashed pre-0.7 write could leave. A
+    /// `masks.json` that is not a JSON list is deleted WITHOUT replacing
+    /// `masks.bin`. ⚠️ Its salts stay the same: renewing them needs the vault,
+    /// which the hook never opens (design §2.4). The next `vault set` or
+    /// `remove` renews them. Failing here never stops masking: `load_masks`
+    /// still reads the legacy file while it exists.
+    pub fn migrate_legacy_masks(&self) -> Result<(), String> {
+        let legacy = self.dir.join(LEGACY_MASKS_FILE);
+        if let Some(plain) = read_legacy(&legacy)? {
+            write_atomic(&self.dir.join(MASKS_FILE), &self.protector.protect(&plain)?)?;
+        }
+        remove_if_present(&legacy)?;
+        remove_if_present(&self.dir.join(LEGACY_MASKS_TMP))
+    }
+
+    /// The masks' plaintext (`mask::masks_json` bytes), or `None` if there are
+    /// none. ⚠️ A valid legacy `masks.json` wins over `masks.bin`: only a
+    /// pre-0.7 binary writes it, so it is newer (a rollback's `vault set`).
+    pub fn load_masks(&self) -> Result<Option<Vec<u8>>, String> {
+        let path = self.dir.join(MASKS_FILE);
+        if let Some(plain) = read_legacy(&self.dir.join(LEGACY_MASKS_FILE))? {
+            return Ok(Some(plain));
+        }
+        let blob = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        self.protector
+            .unprotect(&blob)
+            .map(Some)
+            .map_err(|e| format!("{} cannot be decrypted: {e}", path.display()))
+    }
+}
+
+/// The legacy file's bytes if it exists and is a JSON list.
+fn read_legacy(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::read(path) {
+        Ok(b) if serde_json::from_slice::<Vec<serde_json::Value>>(&b).is_ok() => Ok(Some(b)),
+        Ok(_) => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("read {}: {e}", path.display())),
+    }
+}
+
+/// Two hooks can migrate at once; the loser finds the file already gone.
+fn remove_if_present(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("remove {}: {e}", path.display()))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -247,7 +320,142 @@ mod tests {
         let raw = std::fs::read(dir.path().join("vault.bin")).unwrap();
         assert!(!String::from_utf8_lossy(&raw).contains("supersecretvalue"));
         assert_eq!(store.load().unwrap(), v);
-        assert_eq!(std::fs::read(dir.path().join("masks.json")).unwrap(), b"[]");
+        assert_eq!(store.load_masks().unwrap().as_deref(), Some(&b"[]"[..]));
+    }
+
+    fn xor_store(dir: &Path) -> VaultStore<XorProtector> {
+        VaultStore {
+            dir: dir.into(),
+            protector: XorProtector(0x5a),
+        }
+    }
+
+    #[test]
+    fn save_stores_the_masks_protected_and_drops_a_legacy_masks_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LEGACY_MASKS_FILE), b"[\"old\"]").unwrap();
+        xor_store(dir.path())
+            .save(&Vault::default(), b"[\"new\"]".to_vec())
+            .unwrap();
+        let raw = std::fs::read(dir.path().join(MASKS_FILE)).unwrap();
+        assert_eq!(raw, XorProtector(0x5a).protect(b"[\"new\"]").unwrap());
+        assert!(!dir.path().join(LEGACY_MASKS_FILE).exists());
+    }
+
+    #[test]
+    fn no_masks_file_is_none_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(xor_store(dir.path()).load_masks().unwrap(), None);
+    }
+
+    #[test]
+    fn a_legacy_masks_json_is_sealed_then_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LEGACY_MASKS_FILE), b"[\"old\"]").unwrap();
+        let store = xor_store(dir.path());
+        store.migrate_legacy_masks().unwrap();
+        assert!(!dir.path().join(LEGACY_MASKS_FILE).exists());
+        let raw = std::fs::read(dir.path().join(MASKS_FILE)).unwrap();
+        assert_eq!(raw, XorProtector(0x5a).protect(b"[\"old\"]").unwrap());
+        assert_eq!(
+            store.load_masks().unwrap().as_deref(),
+            Some(&b"[\"old\"]"[..])
+        );
+    }
+
+    #[test]
+    fn a_masks_json_written_after_masks_bin_wins() {
+        // Rolled back to 0.6, `vault set` writes masks.json with the new
+        // secret; masks.bin is now stale and must not hide that secret.
+        let dir = tempfile::tempdir().unwrap();
+        let store = xor_store(dir.path());
+        store
+            .save(&Vault::default(), b"[\"stale\"]".to_vec())
+            .unwrap();
+        std::fs::write(dir.path().join(LEGACY_MASKS_FILE), b"[\"rollback\"]").unwrap();
+        assert_eq!(
+            store.load_masks().unwrap().as_deref(),
+            Some(&b"[\"rollback\"]"[..])
+        );
+        store.migrate_legacy_masks().unwrap();
+        assert!(!dir.path().join(LEGACY_MASKS_FILE).exists());
+        assert_eq!(
+            store.load_masks().unwrap().as_deref(),
+            Some(&b"[\"rollback\"]"[..])
+        );
+    }
+
+    #[test]
+    fn a_failed_seal_still_masks_from_the_legacy_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LEGACY_MASKS_FILE), b"[\"old\"]").unwrap();
+        let store = VaultStore {
+            dir: dir.path().into(),
+            protector: FailingProtector,
+        };
+        assert!(store.migrate_legacy_masks().is_err());
+        assert!(dir.path().join(LEGACY_MASKS_FILE).exists());
+        assert_eq!(
+            store.load_masks().unwrap().as_deref(),
+            Some(&b"[\"old\"]"[..])
+        );
+    }
+
+    #[test]
+    fn a_garbage_masks_json_never_replaces_masks_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = xor_store(dir.path());
+        store
+            .save(&Vault::default(), b"[\"good\"]".to_vec())
+            .unwrap();
+        std::fs::write(dir.path().join(LEGACY_MASKS_FILE), b"").unwrap();
+        assert_eq!(
+            store.load_masks().unwrap().as_deref(),
+            Some(&b"[\"good\"]"[..])
+        );
+        store.migrate_legacy_masks().unwrap();
+        assert!(!dir.path().join(LEGACY_MASKS_FILE).exists());
+        assert_eq!(
+            store.load_masks().unwrap().as_deref(),
+            Some(&b"[\"good\"]"[..])
+        );
+    }
+
+    #[test]
+    fn migration_deletes_a_plaintext_masks_tmp() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LEGACY_MASKS_TMP), b"[\"old\"]").unwrap();
+        xor_store(dir.path()).migrate_legacy_masks().unwrap();
+        assert!(!dir.path().join(LEGACY_MASKS_TMP).exists());
+    }
+
+    #[test]
+    fn writes_never_stage_through_a_fixed_temp_name() {
+        // Concurrent hooks sharing one temp name could truncate a file
+        // another had just renamed into place. A directory squatting on the
+        // old fixed names makes any write through them fail.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("masks.tmp")).unwrap();
+        std::fs::create_dir(dir.path().join("vault.tmp")).unwrap();
+        let store = xor_store(dir.path());
+        store
+            .save(&Vault::default(), b"[\"new\"]".to_vec())
+            .unwrap();
+        assert_eq!(
+            store.load_masks().unwrap().as_deref(),
+            Some(&b"[\"new\"]"[..])
+        );
+    }
+
+    #[test]
+    fn an_undecryptable_masks_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(MASKS_FILE), b"garbage").unwrap();
+        let store = VaultStore {
+            dir: dir.path().into(),
+            protector: FailingProtector,
+        };
+        assert!(store.load_masks().is_err());
     }
 
     #[test]

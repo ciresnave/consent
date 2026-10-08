@@ -73,10 +73,23 @@ That gives one fewer process to keep alive, secure and restart. Nothing the PM a
 on a resident process.
 
 **2.4 Masking uses salted hashes, not plaintext.** The output-masking hook (d) is a separate
-process that runs after every tool call. It never decrypts the vault. It reads `masks.json`,
+process that runs after every tool call. It never decrypts the vault. It reads `masks.bin`,
 which holds each secret's length and `SHA-256(salt ‖ value)`, and it replaces any window of
 output whose hash matches. `with-secret` itself masks its own child's output using the
 plaintext it already holds.
+- `masks.bin` is DPAPI-protected like the vault (row 5). Until 0.7 these hashes were in a plain
+  `masks.json`, so a copy of that file was a fast offline check of guessed values. A slow KDF
+  was ruled out because the hook hashes every window of every tool output.
+- The first hook run of 0.7 or later seals a leftover `masks.json` into `masks.bin` and
+  deletes it. It also deletes the plaintext `masks.tmp` that a crashed 0.6 write could leave.
+  The salts stay the same until the next `vault set` or `remove`, because renewing them needs
+  the vault.
+- A `masks.json` that holds a JSON list wins over `masks.bin`, since only an older binary
+  writes one. A `masks.json` that is not a list is deleted without replacing `masks.bin`. If
+  sealing fails, the hook still masks from the legacy file and tries again on the next call.
+- Known race, during migration only: a hook that read the old `masks.json` just before a
+  `vault set` can write it over that set's `masks.bin`. The newly set secret is then unmasked
+  until the next `set` or `remove`.
 
 ## 3. Threat model — the honest limit (state it this way, never more strongly)
 
@@ -92,8 +105,12 @@ plaintext it already holds.
 - Any process running as this Windows user can call DPAPI to decrypt the vault file. It can read
   `with-secret`'s memory while that is running, forge an approval-cache entry by first taking
   the DPAPI-protected HMAC key, or send keystrokes to the desktop.
-- DPAPI at user scope protects the vault against copies of the disk and backups. It does not
-  protect against other processes running as this same user.
+- DPAPI at user scope protects the vault and `masks.bin` against copies of the disk and
+  backups. It does not protect against other processes running as this same user. Those can
+  also decrypt `masks.bin` and test guesses offline, but they can decrypt the vault itself
+  anyway.
+- A `masks.json` copied before the upgrade still allows offline checks against the values it
+  covered. Only rotating those secrets fixes that.
 - Masking finds exact matches only. A value that has been transformed in any way (URL-encoded,
   split, base64-encoded) passes through.
 - An approval covers its secret for the whole window, not one command. Until the window ends,

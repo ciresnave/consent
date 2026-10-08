@@ -47,7 +47,8 @@ CireSnave and the PM when they provision each credential, and no tool can enforc
    `DPAPI round trip: ok`. `check` never shows a Hello prompt.
 
 Data lives in `%LOCALAPPDATA%\OverMind\with-secret\`: `vault.bin` (DPAPI-protected),
-`masks.json` (salted hashes, no values), `access.log` (no values). `WITH_SECRET_DIR` overrides
+`masks.bin` (salted hashes, no values; DPAPI-protected since 0.7, and the hook seals a leftover
+`masks.json` into it), `access.log` (no values). `WITH_SECRET_DIR` overrides
 this **for tests only**; a lane that set it would just reach an empty vault.
 
 Approvals live in the user-request store, `%LOCALAPPDATA%\OverMind\user-request\`

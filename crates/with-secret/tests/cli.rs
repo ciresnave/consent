@@ -116,17 +116,65 @@ fn run_refuses_a_dump_child() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("blocked"));
 }
 
+#[cfg(windows)]
+const V: &str = "postgres://owner:Sup3rS3cret@db/tj";
+
+#[cfg(windows)]
+fn masks_list() -> Vec<u8> {
+    serde_json::to_vec(&vec![with_secret::mask::HashMask::new("TJ_DB", V).unwrap()]).unwrap()
+}
+
+/// Row 5: the masks live in DPAPI-protected `masks.bin`, so the hook needs
+/// DPAPI (Windows) to read them.
+#[cfg(windows)]
 #[test]
 fn post_tool_use_masks_a_known_value() {
     let dir = tempfile::tempdir().unwrap().keep();
-    let v = "postgres://owner:Sup3rS3cret@db/tj";
-    std::fs::write(
-        dir.join("masks.json"),
-        serde_json::to_vec(&vec![with_secret::mask::HashMask::new("TJ_DB", v).unwrap()]).unwrap(),
-    )
+    with_secret::vault::VaultStore {
+        dir: dir.clone(),
+        protector: with_secret::dpapi::DpapiProtector,
+    }
+    .save(&Default::default(), masks_list())
     .unwrap();
+    assert_masked(&post_tool_use_in(&dir));
+}
+
+/// A 0.6 install left a plaintext `masks.json`. The first hook run seals it
+/// into `masks.bin` and deletes it, and masking carries on with no gap.
+#[cfg(windows)]
+#[test]
+fn post_tool_use_seals_a_legacy_masks_json() {
+    let dir = tempfile::tempdir().unwrap().keep();
+    std::fs::write(dir.join("masks.json"), masks_list()).unwrap();
+    assert_masked(&post_tool_use_in(&dir));
+    assert!(!dir.join("masks.json").exists(), "legacy file left behind");
+    let sealed = std::fs::read(dir.join("masks.bin")).unwrap();
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&sealed).is_err(),
+        "masks.bin is plaintext JSON"
+    );
+    // ...and the sealed file is what the next run reads.
+    assert_masked(&post_tool_use_in(&dir));
+}
+
+#[cfg(windows)]
+fn assert_masked(out: &str) {
+    assert!(!out.contains("Sup3rS3cret"), "{out}");
+    assert!(out.contains("[with-secret:TJ_DB]"), "{out}");
+    // Design §4 (3d): Claude Code silently ignores a STRING updatedToolOutput
+    // for Bash; only the object form replaces the output.
+    let parsed: serde_json::Value = serde_json::from_str(out).unwrap();
+    assert!(
+        parsed["hookSpecificOutput"]["updatedToolOutput"]["stdout"].is_string(),
+        "updatedToolOutput must be an object with a string stdout: {out}"
+    );
+}
+
+#[cfg(windows)]
+fn post_tool_use_in(dir: &std::path::Path) -> String {
+    let v = V;
     let mut child = Command::new(env!("CARGO_BIN_EXE_with-secret"))
-        .env("WITH_SECRET_DIR", &dir)
+        .env("WITH_SECRET_DIR", dir)
         .args(["hook", "post-tool-use"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -144,16 +192,7 @@ fn post_tool_use_masks_a_known_value() {
             .as_bytes(),
         )
         .unwrap();
-    let out = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
-    assert!(!out.contains("Sup3rS3cret"), "{out}");
-    assert!(out.contains("[with-secret:TJ_DB]"));
-    // Design §4 (3d): Claude Code silently ignores a STRING updatedToolOutput
-    // for Bash; only the object form replaces the output.
-    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert!(
-        parsed["hookSpecificOutput"]["updatedToolOutput"]["stdout"].is_string(),
-        "updatedToolOutput must be an object with a string stdout: {out}"
-    );
+    String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap()
 }
 
 /// Board 134: approvals can now outlive today, so they can be ended at any
