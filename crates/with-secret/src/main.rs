@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use chrono::{Local, NaiveDate, Utc};
-use lane_restart::facts::{SysinfoFacts, SystemFacts};
+use lane_state::facts::{SysinfoFacts, SystemFacts};
 use user_request::channel::HelloChannel;
 use user_request::locate;
 use user_request::request::KindId;

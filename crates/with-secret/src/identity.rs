@@ -6,8 +6,8 @@
 
 use std::path::Path;
 
-use lane_restart::facts::ProcEntry;
-use lane_restart::state::LaneState;
+use lane_state::facts::ProcEntry;
+use lane_state::state::LaneState;
 /// Moved to `user-request`, unchanged: with-secret's approval cache signs
 /// its serialised form.
 pub use user_request::Requester;
@@ -77,15 +77,15 @@ pub fn load_states(dir: &Path) -> Vec<LaneState> {
             let path = e.path();
             (path.extension()? == "json").then(|| path.file_stem()?.to_str().map(String::from))?
         })
-        .filter_map(|role| lane_restart::state::load(dir, &role).ok())
+        .filter_map(|role| lane_state::state::load(dir, &role).ok())
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lane_restart::facts::ProcEntry;
-    use lane_restart::state::LaneState;
+    use lane_state::facts::ProcEntry;
+    use lane_state::state::LaneState;
 
     fn p(pid: u32, parent: Option<u32>, name: &str, start: u64) -> ProcEntry {
         ProcEntry {
