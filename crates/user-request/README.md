@@ -77,7 +77,7 @@ Everything lives in `%LOCALAPPDATA%\OverMind\user-request\`:
     overwrite the real grants.
   - A missing key, when the store has data, is treated the same way, never as a fresh install.
 - `grants.json`: approvals, plus the ids of revoked ones (tombstones), so an old copy cannot bring a
-  revoked grant back.
+  revoked grant back, and the durable pending requests (below).
 - `attempts.json`: recent prompts, including ones still pending, and how they ended.
 - Both files are HMAC-signed over their exact bytes. A file that fails its signature, or that
   verifies but does not parse, is moved aside (`*.rejected-<time>-<id>`), never deleted.
@@ -143,6 +143,48 @@ Every call that changes the store saves before it returns.
   with the log at its own line, it is accepted and caught up at the next write. A copy further
   behind, or one that disagrees, fails closed.
 
+### Durable pending requests
+
+A requester that cannot wait (agentlife, waking an agent while nobody is at the desk) records a request
+and goes away. The request is only a record that someone asked: it holds no privilege and expires on no
+clock.
+
+```
+submit(request, grant, bound_hash) -> id     record it; refused over the kind's maximum, never clamped
+begin_answer(id, bound_hash)       -> Asking  void it, or reserve a prompt through the gate
+  ... drop the store, show Asking.request with Asking.grant through a channel, reopen ...
+resolve(reservation, outcome)                 an approval makes the grant and spends the request
+withdraw(id)                                  the requester gives up (a prompt already up cannot land)
+```
+
+- **The person sees what they always saw** (board 134): the Hello prompt alone, three lines, who, which
+  secret, how long. Nothing is typed. **Approve** grants exactly the requested length. **Cancel** refuses:
+  no grant, the request is closed, and the gate's 10-minute cooldown starts.
+- **What survives a restart:** every pending request, with its exact contents. It is in `grants.json`, so
+  it is signed, anchored in the audit chain and covered by the integrity checks like a grant.
+- **A restored request re-prompts and never approves by itself.** `begin_answer` reserves a NEW prompt
+  through the gate (cooldown and caps apply), and only the channel's approval makes a grant. A prompt
+  nobody answered (`TimedOut`, `Unavailable`) leaves the request pending for the next try. Both still count
+  as prompts toward the hourly caps, and a `TimedOut` starts the same 10-minute cooldown as a Cancel, so the
+  next try is at least 10 minutes later.
+- **`bound_hash` binds the request to the consumer's artifact** (agentlife: the frozen plan hash). The
+  consumer passes the hash it holds now to `begin_answer`; any difference **voids** the request (audited
+  `pending-stale`) and the person is never asked.
+- **A tampered request fails closed.** Each record carries a seal: an HMAC, under the store key, over its
+  id, time, request, grant and `bound_hash`. A record whose seal does not match is voided, alerted and
+  audited (`pending-altered`) before any prompt, so an altered subject, length, requester or hash is never
+  shown. The seal catches an edit of a record. It cannot stop a process that holds the key (see the limits).
+- A request whose `bound_hash` no longer matches is voided for good; the consumer submits a new one.
+- A subject over 200 characters, or a summary or reason over 1024, is refused at `submit`.
+- **Stale** also means the requested end has passed, or the grant is no longer within the kind's maximum.
+- **Duplicate:** submitting the exact same request and `bound_hash` again returns the existing id. A
+  different `bound_hash` is a different request.
+- **Single use:** one prompt at a time per request, and an approval is for the requested length only. The
+  grant and the spent request are written together, so a crash cannot leave both.
+- **Caps** (a request never expires, so the count is the limit): 20 per role, 100 in all.
+- `revoke --all` and `repair` drop every pending request; `revoke_matching` drops those of that kind (and
+  subject). Each is audited (`requests-dropped=`).
+
 ### The prompt gate
 
 These limits answer "approval fatigue": a lane re-asking until a mis-click approves it.
@@ -194,5 +236,4 @@ user-request audit verify    check the audit chain since its last reset, and its
   consistently needs no key at all. The chain catches accidents and naive edits, not forgery.
 - The audit log is never rotated, and every append reads it whole.
 - Coming next, per the approved plan:
-  - durable pending requests with no timeout;
   - grants for lane-launch dialog bypasses.

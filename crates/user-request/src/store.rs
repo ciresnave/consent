@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::channel::Outcome;
-use crate::request::{Approval, Grant, KindId, Requester, Scope};
+use crate::request::{Approval, Grant, KindId, Request, Requester, Scope};
 
 /// Encrypts the store's key at rest (`dpapi::Dpapi` in production).
 pub trait Protector {
@@ -164,6 +164,9 @@ pub struct Attempt {
     /// Normalised (`normal_subject`), so `DB`, `db` and `DB ` share a cooldown.
     pub subject: String,
     pub outcome: Ended,
+    /// The durable pending request this prompt answers, if any (`pending.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<String>,
 }
 
 /// What `may_ask` hands back: the pending attempt to resolve once the person
@@ -209,6 +212,10 @@ struct GrantsFile {
     /// (second review of #2b, finding 4). Absent in older files.
     #[serde(default)]
     ended: BTreeMap<String, DateTime<Utc>>,
+    /// Requests nobody has answered yet; they outlive the process, the
+    /// reboot and the day (`pending.rs`). Absent in older files.
+    #[serde(default)]
+    pending: Vec<PendingRequest>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -253,6 +260,7 @@ pub struct Store {
     grants: Vec<StoredGrant>,
     revoked: BTreeSet<String>,
     ended: BTreeMap<String, DateTime<Utc>>,
+    pending: Vec<PendingRequest>,
     attempts: Vec<Attempt>,
     untrusted: Option<Untrusted>,
     /// `grants.json` was there but could not be read under this key.
@@ -353,6 +361,7 @@ impl Store {
             grants: Vec::new(),
             revoked: BTreeSet::new(),
             ended: BTreeMap::new(),
+            pending: Vec::new(),
             attempts: Vec::new(),
             untrusted,
             grants_unreadable: false,
@@ -456,6 +465,7 @@ impl Store {
                     self.grants = g.grants;
                     self.revoked = g.revoked;
                     self.ended = g.ended;
+                    self.pending = g.pending;
                     self.seq = seq;
                 }
                 Err(e) => {
@@ -600,6 +610,7 @@ impl Store {
                 .filter(|(_, at)| **at > now - Duration::days(1))
                 .map(|(id, at)| (id.clone(), *at))
                 .collect(),
+            pending: self.pending.clone(),
         };
         let attempts: Vec<&Attempt> = self
             .attempts
@@ -810,18 +821,26 @@ impl Store {
             .filter(|a| a.outcome == Ended::Pending && matches(a.kind, &a.subject))
             .map(|a| a.id.clone())
             .collect();
+        let requests: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|p| matches(p.request.kind, &p.request.subject))
+            .map(|p| p.id.clone())
+            .collect();
         self.audit(
             now,
             "revoked-matching",
             &format!(
-                "kind={kind:?} subject={} n={} ids={} pending-ended={}",
+                "kind={kind:?} subject={} n={} ids={} pending-ended={} requests-dropped={}",
                 subject.as_deref().unwrap_or("*"),
                 ids.len(),
                 ids.join(","),
-                pending.join(",")
+                pending.join(","),
+                requests.join(",")
             ),
         )?;
         let n = ids.len();
+        self.pending.retain(|p| !requests.contains(&p.id));
         self.revoked.extend(ids);
         for a in self.attempts.iter_mut().filter(|a| pending.contains(&a.id)) {
             a.outcome = Ended::NotAsked;
@@ -846,15 +865,18 @@ impl Store {
             .filter(|a| a.outcome == Ended::Pending)
             .map(|a| a.id.clone())
             .collect();
+        let requests: Vec<String> = self.pending.iter().map(|p| p.id.clone()).collect();
         self.audit(
             now,
             "revoked-all",
             &format!(
-                "n={n} ids={} pending-ended={}",
+                "n={n} ids={} pending-ended={} requests-dropped={}",
                 ids.join(","),
-                pending.join(",")
+                pending.join(","),
+                requests.join(",")
             ),
         )?;
+        self.pending.clear();
         self.revoked.extend(ids);
         for a in self
             .attempts
@@ -911,6 +933,7 @@ impl Store {
             self.grants.clear();
             self.revoked.clear();
             self.ended.clear();
+            self.pending.clear();
             self.attempts.clear();
             self.seq = 0;
             self.untrusted = Some(Untrusted::Files(was.clone()));
@@ -923,6 +946,7 @@ impl Store {
             kind: KindId::Secret,
             subject: "repair".into(),
             outcome: Ended::Repaired,
+            pending: None,
         });
         self.save(now)?;
         self.audit(
@@ -968,6 +992,21 @@ impl Store {
         now: DateTime<Utc>,
         alert: &dyn Alert,
     ) -> Result<Reservation, String> {
+        self.reserve(requester, kind, subject, now, alert, None)
+    }
+
+    /// `may_ask_at`, for a prompt that answers durable pending request
+    /// `pending` (the attempt remembers which, so an answer ends that request
+    /// in the same save as the grant).
+    pub(super) fn reserve(
+        &mut self,
+        requester: &Requester,
+        kind: KindId,
+        subject: &str,
+        now: DateTime<Utc>,
+        alert: &dyn Alert,
+        pending: Option<String>,
+    ) -> Result<Reservation, String> {
         self.writable()?;
         let subject = normal_subject(subject);
         let role = requester.role.clone();
@@ -1005,6 +1044,7 @@ impl Store {
             kind,
             subject: subject.clone(),
             outcome: Ended::Pending,
+            pending,
         });
         let recorded = self
             .audit(
@@ -1109,6 +1149,7 @@ impl Store {
             self.grants.clone(),
             self.revoked.clone(),
             self.attempts.clone(),
+            self.pending.clone(),
         );
         let result = self.resolve_once(reservation, outcome, now, alert);
         if result.is_err() {
@@ -1118,7 +1159,7 @@ impl Store {
                 .filter(|a| a.outcome == Ended::Alerted && !before.2.contains(a))
                 .cloned()
                 .collect();
-            (self.grants, self.revoked, self.attempts) = before;
+            (self.grants, self.revoked, self.attempts, self.pending) = before;
             // the alert was delivered and audited: keep its record (review 5,
             // M-4)
             self.attempts.extend(alerted);
@@ -1160,6 +1201,24 @@ impl Store {
             ));
         }
         let (role, subject) = (a.requester.role.clone(), a.subject.clone());
+        // a prompt that answers a durable pending request needs the request
+        // to be still there (a second prompt for it, or a withdrawal, must not
+        // land) and, when approved, to be for the length that was asked
+        let (pending_id, reserved_at) = (a.pending.clone(), a.at);
+        let asked = match &pending_id {
+            Some(pid) => Some(
+                self.pending
+                    .iter()
+                    .find(|p| p.id == *pid)
+                    .map(|p| p.grant.clone())
+                    .ok_or_else(|| {
+                        format!(
+                            "pending request {pid} is no longer pending (answered or withdrawn)"
+                        )
+                    })?,
+            ),
+            None => None,
+        };
         let ended = match outcome {
             Outcome::Approved(ap) => {
                 if ap.kind != a.kind
@@ -1188,6 +1247,13 @@ impl Store {
                         ap.expires_at.map(|e| e.to_rfc3339()).unwrap_or_default()
                     ));
                 }
+                if let Some(asked) = &asked {
+                    if !pending::is_what_was_requested(asked, ap, reserved_at) {
+                        return Err(
+                            "the approval is not for the duration that was requested".into()
+                        );
+                    }
+                }
                 Ended::Approved
             }
             Outcome::Denied => Ended::Denied,
@@ -1202,13 +1268,22 @@ impl Store {
             // (review 3, M6)
             grant = Some(self.add(ap.clone(), now)?);
         }
+        // an answer spends its request in the same save as the grant; a prompt
+        // nobody answered leaves it pending
+        let spent = pending_id.filter(|_| !matches!(ended, Ended::TimedOut | Ended::Unavailable));
+        if let Some(pid) = &spent {
+            self.pending.retain(|p| p.id != *pid);
+        }
         self.audit(
             now,
             "resolved",
             &format!(
-                "outcome={} role={role} subject={subject} attempt={}",
+                "outcome={} role={role} subject={subject} attempt={}{}",
                 ended.name(),
-                reservation.attempt_id
+                reservation.attempt_id,
+                spent
+                    .map(|p| format!(" pending-spent={p}"))
+                    .unwrap_or_default()
             ),
         )?;
         if let Some(a) = self
@@ -1264,6 +1339,7 @@ impl Store {
             kind: KindId::Secret,
             subject: tag,
             outcome: Ended::Alerted,
+            pending: None,
         });
         self.audit(now, "ALERT", what)?;
         alert.alert(what);
@@ -1793,6 +1869,9 @@ mod fault {
         false
     }
 }
+
+mod pending;
+pub use pending::{Asking, PendingRequest, MAX_PENDING, MAX_PENDING_PER_ROLE};
 
 #[cfg(test)]
 mod tests;
