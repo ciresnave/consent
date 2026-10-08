@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::channel::Outcome;
-use crate::request::{Approval, Grant, KindId, Request, Requester, Scope};
+use crate::request::{Approval, Grant, KindId, MaxGrant, Request, Requester, Scope};
 
 /// Encrypts the store's key at rest (`dpapi::Dpapi` in production).
 pub trait Protector {
@@ -672,7 +672,26 @@ impl Store {
         {
             return Err("a lane dialog approval must name one lane and one dialog".into());
         }
-        let grant = approval.expires_at.map_or(Grant::Forever, Grant::Until);
+        if approval.kind == KindId::RestorePlan
+            && crate::request::parse_restore_plan_subject(&approval.subject).is_none()
+        {
+            return Err("a restore approval must name one plan".into());
+        }
+        if approval.kind.max() == MaxGrant::OneUse
+            && self.has_unspent(approval.kind, &approval.subject, now)
+        {
+            return Err(format!(
+                "an unspent {:?} approval for '{}' already exists: spend it first (one plan, one use)",
+                approval.kind,
+                normal_subject(&approval.subject)
+            ));
+        }
+        // an approval with no end is forever, unless its kind is one use
+        let grant = match approval.expires_at {
+            Some(e) => Grant::Until(e),
+            None if approval.kind.max() == MaxGrant::OneUse => Grant::OneUse,
+            None => Grant::Forever,
+        };
         if !grant.within(
             approval.kind.max(),
             approval.approved_at.with_timezone(&Local),
@@ -684,9 +703,14 @@ impl Store {
             ));
         }
         let id = random_id();
-        let expires = approval
-            .expires_at
-            .map_or("FOREVER".to_string(), |e| e.to_rfc3339());
+        let expires = approval.expires_at.map_or(
+            if approval.kind.max() == MaxGrant::OneUse {
+                "ONE-USE".to_string()
+            } else {
+                "FOREVER".to_string()
+            },
+            |e| e.to_rfc3339(),
+        );
         self.audit(
             now,
             "granted",
@@ -702,11 +726,25 @@ impl Store {
         Ok(id)
     }
 
+    /// Is there a live, unrevoked grant of `kind` for `subject`, whoever holds
+    /// it? One-use kinds allow at most one at a time, so two taps for the same
+    /// plan can never give two uses.
+    pub(crate) fn has_unspent(&self, kind: KindId, subject: &str, now: DateTime<Utc>) -> bool {
+        self.active_at(now).into_iter().any(|g| {
+            g.approval.kind == kind
+                && normal_subject(&g.approval.subject) == normal_subject(subject)
+        })
+    }
+
     /// A live grant covering this request: same kind and subject, not
     /// expired, not revoked, the same requester when the kind's scope is one
     /// requester - and never from an untrustworthy store. The store reads
     /// the clock itself (review 4, I-B): no caller can pick the time a grant
     /// or a gate window is judged at.
+    ///
+    /// ⚠️ For a one-use kind (`RestorePlan`) `find` only LOOKS: the approval
+    /// stays unspent. A consumer must authorise the action with
+    /// `spend_one_use` (and run it only on `Ok`), never with `find` alone.
     pub fn find(&self, kind: KindId, subject: &str, requester: &Requester) -> Option<&StoredGrant> {
         self.find_at(kind, subject, requester, Utc::now())
     }
@@ -725,6 +763,11 @@ impl Store {
         }
         if kind == KindId::LaneDialogBypass
             && crate::request::parse_lane_dialog_subject(subject).is_none()
+        {
+            return None;
+        }
+        if kind == KindId::RestorePlan
+            && crate::request::parse_restore_plan_subject(subject).is_none()
         {
             return None;
         }
@@ -753,6 +796,51 @@ impl Store {
             .iter()
             .filter(|g| live(g, now) && !self.revoked.contains(&g.id))
             .collect()
+    }
+
+    /// Spends the unspent one-use approval for `kind` and `subject` (the same
+    /// match `find` makes), and returns its id. Call it BEFORE the approved
+    /// action runs: a crash during the action then leaves the approval spent,
+    /// and a new run needs a fresh approval. `Ok` only when the spend is on
+    /// disk; any error means nothing was spent and the action must not run.
+    /// Only a one-use kind can be spent: a timed grant is never consumed.
+    pub fn spend_one_use(
+        &mut self,
+        kind: KindId,
+        subject: &str,
+        requester: &Requester,
+    ) -> Result<String, String> {
+        self.spend_one_use_at(kind, subject, requester, Utc::now())
+    }
+
+    pub(crate) fn spend_one_use_at(
+        &mut self,
+        kind: KindId,
+        subject: &str,
+        requester: &Requester,
+        now: DateTime<Utc>,
+    ) -> Result<String, String> {
+        if kind.max() != MaxGrant::OneUse {
+            return Err(format!("{kind:?} is not a one use kind: nothing to spend"));
+        }
+        self.writable()?;
+        self.key_known()?;
+        self.trustworthy()?;
+        let id = self
+            .find_at(kind, subject, requester, now)
+            .map(|g| g.id.clone())
+            .ok_or_else(|| format!("no unspent approval for {kind:?} '{subject}'"))?;
+        self.audit(
+            now,
+            "spent",
+            &format!("id={id} kind={kind:?} subject={}", normal_subject(subject)),
+        )?;
+        self.revoked.insert(id.clone());
+        if let Err(e) = self.save(now) {
+            self.revoked.remove(&id);
+            return Err(e);
+        }
+        Ok(id)
     }
 
     /// Revokes one grant; `false` when there is no such active grant. Works
@@ -1833,7 +1921,13 @@ fn append(path: &Path, text: &str) -> Result<(), String> {
 /// rename onto a file someone briefly holds is retried (review 3, I2).
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension(format!("tmp-{}", random_id()));
-    std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    // flushed to the disk BEFORE the rename: a spent one-use approval must not
+    // come back after a power loss (the rename itself is journaled)
+    let written = std::fs::File::create(&tmp).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    });
+    written.map_err(|e| format!("write {}: {e}", tmp.display()))?;
     let deadline = Instant::now() + RETRY_FOR;
     loop {
         match std::fs::rename(&tmp, path) {

@@ -60,9 +60,14 @@ fn list() -> Result<u8, String> {
         return Ok(u8::from(untrusted));
     }
     // FOREVER grants first, loud (PM condition (a))
-    let (forever, timed): (Vec<_>, Vec<_>) = active
+    // an approval with no end is forever, except a one-use kind's: that one is
+    // waiting to be spent, and says so
+    let (open_ended, timed): (Vec<_>, Vec<_>) = active
         .into_iter()
         .partition(|g| g.approval.expires_at.is_none());
+    let (unspent, forever): (Vec<_>, Vec<_>) = open_ended
+        .into_iter()
+        .partition(|g| g.approval.kind.max() == user_request::MaxGrant::OneUse);
     if !forever.is_empty() {
         println!("*** FOREVER GRANTS (until revoked) ***");
         for g in &forever {
@@ -72,6 +77,13 @@ fn list() -> Result<u8, String> {
                 g.id, a.kind, a.subject, a.requester.role
             );
         }
+    }
+    for g in &unspent {
+        let a = &g.approval;
+        println!(
+            "  {}  {:?}  {}  by '{}'  ONE USE, not yet spent",
+            g.id, a.kind, a.subject, a.requester.role
+        );
     }
     for g in &timed {
         let a = &g.approval;

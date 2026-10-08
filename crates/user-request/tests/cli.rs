@@ -185,3 +185,46 @@ fn a_lost_key_lists_as_unknown_not_as_nothing_granted() {
     assert_eq!(run(d.path(), &["repair"]).0, 0);
     assert_eq!(run(d.path(), &["list"]).1.trim(), "no active grants");
 }
+
+/// Board 150: an approval waiting to be spent has no end, but it is NOT a
+/// forever grant: `list` must not shout FOREVER about it.
+#[test]
+fn list_shows_an_unspent_one_use_approval_as_one_use_not_forever() {
+    let d = tempfile::tempdir().unwrap();
+    let who = Requester {
+        role: "agentlife".into(),
+        session_id: "s".into(),
+        claude_pid: 1,
+        claude_start_secs: 1,
+        managed: true,
+    };
+    let mut s = Store::open(
+        d.path(),
+        &Dpapi { entropy: ENTROPY },
+        Some(d.path().join("head.copy")),
+    )
+    .unwrap();
+    let subject = user_request::request::restore_plan_subject("abc123").unwrap();
+    let r = s
+        .may_ask(&who, KindId::RestorePlan, &subject, &AuditOnly)
+        .unwrap();
+    let ap = Approval {
+        kind: KindId::RestorePlan,
+        subject,
+        requester: who,
+        approved_at: Utc::now(),
+        expires_at: None,
+    };
+    let id = s
+        .resolve(&r, &Outcome::Approved(ap), &AuditOnly)
+        .unwrap()
+        .unwrap();
+    drop(s);
+    let (code, out, _) = run(d.path(), &["list"]);
+    assert_eq!(code, 0);
+    assert!(
+        out.contains(&id) && out.contains("ONE USE, not yet spent"),
+        "{out}"
+    );
+    assert!(!out.contains("FOREVER"), "{out}");
+}

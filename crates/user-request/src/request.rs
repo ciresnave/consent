@@ -34,6 +34,8 @@ pub enum MaxGrant {
     Finite,
     /// Anything, including forever.
     Forever,
+    /// One use, spent when the approved action runs: no length at all.
+    OneUse,
 }
 
 /// Whether an approval belongs to the asking process only, or to anyone.
@@ -53,16 +55,24 @@ pub enum KindId {
     Secret,
     /// lane-restart: auto-answer a lane's startup dialog without asking.
     LaneDialogBypass,
+    /// agentlife: restore the fleet from ONE frozen plan, once (board 150,
+    /// CireSnave 2026-10-08: "One-shot."). Spent when the restore runs.
+    RestorePlan,
 }
 
 impl KindId {
     /// Every kind, for checks that must cover all of them.
-    pub const ALL: [KindId; 2] = [KindId::Secret, KindId::LaneDialogBypass];
+    pub const ALL: [KindId; 3] = [
+        KindId::Secret,
+        KindId::LaneDialogBypass,
+        KindId::RestorePlan,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             KindId::Secret => "use a secret",
             KindId::LaneDialogBypass => "auto-answer a lane startup dialog",
+            KindId::RestorePlan => "restore lanes",
         }
     }
 
@@ -73,6 +83,7 @@ impl KindId {
             // refuse. A stated length, never forever (PM ruling on #115 M4)
             KindId::Secret => MaxGrant::Finite,
             KindId::LaneDialogBypass => MaxGrant::Forever,
+            KindId::RestorePlan => MaxGrant::OneUse,
         }
     }
 
@@ -80,6 +91,10 @@ impl KindId {
         match self {
             KindId::Secret => Scope::ThisRequester,
             KindId::LaneDialogBypass => Scope::AnyRequester,
+            // The plan hash is the binding, not the process: a restore after a
+            // reboot is asked for by a NEW agentlife process, and that is the
+            // case this kind exists for.
+            KindId::RestorePlan => Scope::AnyRequester,
         }
     }
 }
@@ -116,6 +131,39 @@ pub fn parse_lane_dialog_subject(subject: &str) -> Option<(&str, &str)> {
     (plain_part(lane) && plain_part(dialog)).then_some((lane, dialog))
 }
 
+/// The longest a plan hash in a restore-plan subject may be (a SHA-256 in hex
+/// is 64; room is left for a longer digest).
+pub const MAX_PLAN_HASH_CHARS: usize = 128;
+
+/// Lowercase only: the store compares subjects case-folded, so two hashes that
+/// differ only by case would otherwise be the same plan to `find` and `spend`
+/// but different to `bound_hash`.
+fn plain_hash(h: &str) -> bool {
+    !h.is_empty()
+        && h.chars().count() <= MAX_PLAN_HASH_CHARS
+        && h.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'))
+}
+
+/// The subject of a `RestorePlan` request: the hash of ONE frozen plan (each
+/// agent's id/name, cwd and rebuilt argv, permission mode included). The
+/// person is shown it whole, and the pending request's `bound_hash` must be
+/// the same string, so a plan that changed afterwards voids the request.
+pub fn restore_plan_subject(plan_hash: &str) -> Result<String, String> {
+    if !plain_hash(plan_hash) {
+        return Err(format!(
+            "a plan hash is 1 to {MAX_PLAN_HASH_CHARS} characters of lowercase letters, digits, '-', '_' or '.'"
+        ));
+    }
+    Ok(format!("plan {plan_hash}"))
+}
+
+/// The plan hash a subject names, if it is exactly the shape
+/// `restore_plan_subject` makes.
+pub fn parse_restore_plan_subject(subject: &str) -> Option<&str> {
+    subject.strip_prefix("plan ").filter(|h| plain_hash(h))
+}
+
 /// What the approver grants. A request-side choice: once approved, what is
 /// kept is the ABSOLUTE end the person was shown (`Approval::expires_at`),
 /// never this relative form.
@@ -127,6 +175,8 @@ pub enum Grant {
     Until(DateTime<Utc>),
     /// Until revoked.
     Forever,
+    /// Once: spent when the approved action runs. Not a length.
+    OneUse,
 }
 
 /// A grant whose end cannot be represented (a `For` that overflows).
@@ -141,7 +191,10 @@ impl Grant {
         }
     }
 
-    /// When it ends if shown at `now`: `Ok(None)` for forever. Checked: a
+    /// When it ends if shown at `now`: `Ok(None)` for NO END, which is both
+    /// `Forever` and `OneUse` (a one-use grant is spent, not timed out): tell
+    /// them apart by the variant, or by `KindId::max()`, never by `None`
+    /// alone. Checked: a
     /// `For` too large to add is `Err`, never a panic.
     pub fn end_at(&self, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, Unrepresentable> {
         match self {
@@ -150,7 +203,7 @@ impl Grant {
                 .map(Some)
                 .ok_or(Unrepresentable),
             Grant::Until(t) => Ok(Some(*t)),
-            Grant::Forever => Ok(None),
+            Grant::Forever | Grant::OneUse => Ok(None),
         }
     }
 
@@ -158,6 +211,12 @@ impl Grant {
     /// midnight)? A grant that ends before it starts, or whose end cannot
     /// be represented, is never within.
     pub fn within<Tz: TimeZone>(&self, max: MaxGrant, now: DateTime<Tz>) -> bool {
+        // One use has no end to compare: it fits a one-use kind and nothing
+        // else, and a one-use kind takes nothing but one use (a length, a date
+        // or forever is refused, never clamped).
+        if matches!(self, Grant::OneUse) || max == MaxGrant::OneUse {
+            return matches!(self, Grant::OneUse) && max == MaxGrant::OneUse;
+        }
         let utc = now.with_timezone(&Utc);
         let Ok(end) = self.end_at(utc) else {
             return false;
@@ -167,6 +226,8 @@ impl Grant {
         }
         match (max, end) {
             (MaxGrant::Forever, _) => true,
+            // handled above; a length is never one use
+            (MaxGrant::OneUse, _) => false,
             (MaxGrant::Finite, end) => end.is_some(),
             (_, None) => false,
             (MaxGrant::For(d), Some(e)) => utc.checked_add_signed(d).is_some_and(|m| e <= m),
@@ -178,6 +239,9 @@ impl Grant {
     /// FOREVER is loud on purpose (PM condition: Forever grants are shown in
     /// a distinct, loud form).
     pub fn describe(&self, now: DateTime<Utc>) -> String {
+        if matches!(self, Grant::OneUse) {
+            return "one use".to_string();
+        }
         let local = |t: DateTime<Utc>| {
             t.with_timezone(&Local)
                 .format("%Y-%m-%d %H:%M:%S %Z")
@@ -241,11 +305,14 @@ pub struct Request {
 
 impl Request {
     /// Is the subject one this kind accepts? A `LaneDialogBypass` must name a
-    /// lane; other kinds take any subject.
+    /// lane, a `RestorePlan` one plan; other kinds take any subject.
     pub fn check_subject(&self) -> Result<(), String> {
         match self.kind {
             KindId::LaneDialogBypass if parse_lane_dialog_subject(&self.subject).is_none() => {
                 Err("a lane dialog request must name one lane and one dialog".into())
+            }
+            KindId::RestorePlan if parse_restore_plan_subject(&self.subject).is_none() => {
+                Err("a restore request must name one plan (subject 'plan <hash>')".into())
             }
             _ => Ok(()),
         }
@@ -453,6 +520,112 @@ mod tests {
             let listed = section.contains(&format!("`{k:?}`"));
             assert_eq!(listed, k.max() == MaxGrant::Forever, "{k:?}");
         }
+    }
+
+    // -- RestorePlan (board 150, CireSnave 2026-10-08: "One-shot.") ----------
+
+    /// A one-shot kind has no length: not a duration, not a date, never forever.
+    #[test]
+    fn a_restore_plan_is_one_use_and_nothing_longer() {
+        let now = at(9, 0);
+        let max = KindId::RestorePlan.max();
+        assert_eq!(max, MaxGrant::OneUse);
+        assert!(Grant::OneUse.within(max, now));
+        assert!(!Grant::Forever.within(max, now));
+        assert!(!Grant::for_duration(Duration::seconds(1)).within(max, now));
+        assert!(!Grant::Until(now.with_timezone(&Utc) + Duration::hours(1)).within(max, now));
+    }
+
+    /// And a one-use grant is within no kind that is about a length: it must
+    /// not slip past a `Finite` or `Forever` maximum as "no end".
+    #[test]
+    fn a_one_use_grant_is_not_within_any_other_kinds_maximum() {
+        let now = at(9, 0);
+        for max in [
+            MaxGrant::Finite,
+            MaxGrant::Forever,
+            MaxGrant::UntilLocalMidnight,
+            MaxGrant::For(Duration::hours(1)),
+        ] {
+            assert!(!Grant::OneUse.within(max, now), "{max:?}");
+        }
+        for k in KindId::ALL
+            .into_iter()
+            .filter(|k| *k != KindId::RestorePlan)
+        {
+            assert!(!Grant::OneUse.within(k.max(), now), "{k:?}");
+        }
+    }
+
+    /// The person is shown "one use", never a time, and never FOREVER.
+    #[test]
+    fn a_one_use_grant_is_described_as_one_use() {
+        let now = at(9, 0).with_timezone(&Utc);
+        assert_eq!(Grant::OneUse.describe(now), "one use");
+        assert_eq!(Grant::OneUse.end_at(now), Ok(None));
+        // control: forever still shouts
+        assert!(Grant::Forever.describe(now).contains("FOREVER"));
+    }
+
+    #[test]
+    fn a_restore_plan_kind_is_listed_and_is_not_a_forever_kind() {
+        assert!(KindId::ALL.contains(&KindId::RestorePlan));
+        assert_ne!(KindId::RestorePlan.max(), MaxGrant::Forever);
+        // the README test above keeps the forever list in step; RestorePlan
+        // must not be on it
+        let readme = include_str!("../README.md");
+        let section = readme
+            .split("### Kinds that can be granted forever")
+            .nth(1)
+            .unwrap()
+            .split(
+                "
+## ",
+            )
+            .next()
+            .unwrap();
+        assert!(!section.contains("`RestorePlan`"));
+    }
+
+    /// The subject names the plan hash and nothing else, so the person sees
+    /// exactly what was frozen and it can be compared with `bound_hash`.
+    #[test]
+    fn a_restore_plan_subject_names_one_plan_hash() {
+        let h = "a".repeat(64);
+        let s = restore_plan_subject(&h).unwrap();
+        assert_eq!(s, format!("plan {h}"));
+        assert_eq!(parse_restore_plan_subject(&s), Some(h.as_str()));
+        for bad in ["", "has space", "quo'te", "comma,", "../x", "AbC", "ABC123"] {
+            assert!(restore_plan_subject(bad).is_err(), "{bad:?}");
+        }
+        assert!(restore_plan_subject(&"a".repeat(MAX_PLAN_HASH_CHARS + 1)).is_err());
+        assert!(restore_plan_subject(&"a".repeat(MAX_PLAN_HASH_CHARS)).is_ok());
+        // a bare hash, or a forged second plan, is not a plan subject
+        assert_eq!(parse_restore_plan_subject(&h), None);
+        assert_eq!(
+            parse_restore_plan_subject(&format!("plan {h} plan {h}")),
+            None
+        );
+        assert_eq!(parse_restore_plan_subject("plan "), None);
+    }
+
+    #[test]
+    fn a_restore_plan_request_must_name_a_plan() {
+        let r = |subject: &str| Request {
+            kind: KindId::RestorePlan,
+            subject: subject.into(),
+            summary: String::new(),
+            requester: Requester {
+                role: "agentlife".into(),
+                session_id: "s".into(),
+                claude_pid: 1,
+                claude_start_secs: 1,
+                managed: false,
+            },
+            reason: String::new(),
+        };
+        assert!(r("everything").check_subject().is_err());
+        assert!(r("plan abc123").check_subject().is_ok());
     }
 
     /// PM ruling on user-request #5 (2026-10-08): a LaneDialogBypass grant is

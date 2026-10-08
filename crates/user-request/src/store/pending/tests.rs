@@ -633,3 +633,283 @@ fn pending_lane_dialog_requests_are_per_lane() {
     assert!(s.submit_at(&bare, &Grant::Forever, "h", t0()).is_err());
     assert_eq!(s.pending().len(), 2);
 }
+
+// -- RestorePlan: a ONE-SHOT approval, bound to one frozen plan --------------
+// CireSnave, 2026-10-08 (board 150), verbatim: "One-shot." The PM's spec: spent
+// when the restore runs; no duration; a crash mid-run needs a fresh tap; bound
+// to exactly one plan by bound_hash; a changed plan voids it unasked.
+
+const PLAN: &str = "1f0e9d8c7b6a59483726150413223344556677889900aabbccddeeff00112233";
+
+fn restore(role: &str, plan: &str) -> Request {
+    Request {
+        kind: KindId::RestorePlan,
+        subject: crate::request::restore_plan_subject(plan).unwrap(),
+        summary: "restore 3 agents".into(),
+        requester: who(role),
+        reason: "reboot".into(),
+    }
+}
+
+fn submit_restore(dir: &Path, plan: &str) -> String {
+    let mut s = open(dir);
+    s.submit_at(&restore("agentlife", plan), &Grant::OneUse, plan, t0())
+        .unwrap()
+}
+
+/// The Hello prompt shows exactly three things (who, what, how long), and
+/// the last is "one use".
+#[test]
+fn a_restore_prompt_shows_who_what_and_one_use() {
+    let d = tempdir().unwrap();
+    let id = submit_restore(d.path(), PLAN);
+    let ch = hello(approve, t0());
+    answer_via(d.path(), &id, PLAN, &ch, t0()).unwrap();
+    let shown = ch.consent.shown.borrow();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(
+        shown[0],
+        format!("Who: lane 'agentlife'\nWants: restore lanes: plan {PLAN}\nDuration: one use")
+    );
+}
+
+/// No duration is ever accepted for this kind: a length, a date and forever
+/// are all refused before anything is stored or shown.
+#[test]
+fn a_restore_request_that_asks_for_a_duration_is_refused() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    let r = restore("agentlife", PLAN);
+    for g in [
+        hour(),
+        Grant::Until(t0() + Duration::days(1)),
+        Grant::Forever,
+        Grant::For { secs: 1 },
+    ] {
+        let err = s.submit_at(&r, &g, PLAN, t0()).unwrap_err();
+        assert!(err.contains("maximum"), "{g:?}: {err}");
+    }
+    assert!(s.pending().is_empty());
+    // control: one use is accepted
+    assert!(s.submit_at(&r, &Grant::OneUse, PLAN, t0()).is_ok());
+    // and one use is refused for a kind that is about a length
+    let secret = req("agentlife", "TJ_DB");
+    assert!(s.submit_at(&secret, &Grant::OneUse, "h", t0()).is_err());
+}
+
+/// bound_hash IS the plan hash: a request whose hash differs from the plan
+/// its subject names cannot be made.
+#[test]
+fn a_restore_request_is_bound_to_the_plan_it_names() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    let r = restore("agentlife", PLAN);
+    let err = s
+        .submit_at(&r, &Grant::OneUse, "some-other-hash", t0())
+        .unwrap_err();
+    assert!(err.contains("plan"), "{err}");
+    assert!(s.pending().is_empty());
+}
+
+/// A changed plan voids the request, and the person is never asked.
+#[test]
+fn a_changed_plan_voids_the_restore_request_unasked() {
+    let d = tempdir().unwrap();
+    let id = submit_restore(d.path(), PLAN);
+    let ch = hello(approve, t0());
+    let err = answer_via(d.path(), &id, "a-different-plan-hash", &ch, t0()).unwrap_err();
+    assert!(err.contains("bound_hash"), "{err}");
+    assert!(ch.consent.shown.borrow().is_empty(), "prompted anyway");
+    let s = open(d.path());
+    assert!(s.pending().is_empty());
+    assert!(s.grants().is_empty());
+}
+
+/// Approving stores one unspent grant with NO end (it is spent, not timed out),
+/// and it is not mistaken for a forever grant: only the exact plan finds it.
+#[test]
+fn approving_a_restore_stores_a_one_use_grant_for_that_plan_only() {
+    let d = tempdir().unwrap();
+    let id = submit_restore(d.path(), PLAN);
+    answer_via(d.path(), &id, PLAN, &hello(approve, t0()), t0()).unwrap();
+    let s = open(d.path());
+    assert!(s.pending().is_empty(), "the request is spent by the answer");
+    assert_eq!(s.grants().len(), 1);
+    assert_eq!(s.grants()[0].approval.expires_at, None);
+    let subject = crate::request::restore_plan_subject(PLAN).unwrap();
+    let other = crate::request::restore_plan_subject("another-plan").unwrap();
+    let anyone = who("someone-else");
+    assert!(s
+        .find_at(KindId::RestorePlan, &subject, &anyone, t0())
+        .is_some());
+    assert!(s
+        .find_at(KindId::RestorePlan, &other, &anyone, t0())
+        .is_none());
+}
+
+/// SPENT ON USE: the second use is refused, also after a restart.
+#[test]
+fn a_restore_approval_is_spent_by_its_first_use() {
+    let d = tempdir().unwrap();
+    let id = submit_restore(d.path(), PLAN);
+    answer_via(d.path(), &id, PLAN, &hello(approve, t0()), t0()).unwrap();
+    let subject = crate::request::restore_plan_subject(PLAN).unwrap();
+    let r = who("agentlife");
+    {
+        let mut s = open(d.path());
+        assert!(s.spend_one_use(KindId::RestorePlan, &subject, &r).is_ok());
+        assert!(
+            s.spend_one_use(KindId::RestorePlan, &subject, &r).is_err(),
+            "a second use in the same process"
+        );
+        assert!(s.find(KindId::RestorePlan, &subject, &r).is_none());
+    }
+    // a crash mid-run: the process dies after spending, so reopening finds it
+    // spent and a fresh tap is needed
+    let mut s = open(d.path());
+    assert!(s.find(KindId::RestorePlan, &subject, &r).is_none());
+    assert!(s.spend_one_use(KindId::RestorePlan, &subject, &r).is_err());
+}
+
+/// Spending plan A can never spend, or be used for, plan B.
+#[test]
+fn spending_one_plans_approval_does_not_cover_another_plan() {
+    let d = tempdir().unwrap();
+    let id = submit_restore(d.path(), PLAN);
+    answer_via(d.path(), &id, PLAN, &hello(approve, t0()), t0()).unwrap();
+    let mut s = open(d.path());
+    let other = crate::request::restore_plan_subject("another-plan").unwrap();
+    assert!(s
+        .spend_one_use(KindId::RestorePlan, &other, &who("agentlife"))
+        .is_err());
+    // control: the approved plan is still spendable afterwards
+    let subject = crate::request::restore_plan_subject(PLAN).unwrap();
+    assert!(s
+        .spend_one_use(KindId::RestorePlan, &subject, &who("agentlife"))
+        .is_ok());
+}
+
+/// Only a one-use kind can be spent: a timed secret grant is not consumed.
+#[test]
+fn only_a_one_use_kind_can_be_spent() {
+    let d = tempdir().unwrap();
+    let id = submit(d.path(), "overmind", "TJ_DB", "plan-1");
+    answer_via(d.path(), &id, "plan-1", &hello(approve, t0()), t0()).unwrap();
+    let mut s = open(d.path());
+    let err = s
+        .spend_one_use(KindId::Secret, "TJ_DB", &who("overmind"))
+        .unwrap_err();
+    assert!(err.contains("one use"), "{err}");
+    assert!(s
+        .find_at(KindId::Secret, "TJ_DB", &who("overmind"), t0())
+        .is_some());
+}
+
+/// Crash before the answer: the process dies with the prompt unanswered. The
+/// request is still pending and the person is asked again.
+#[test]
+fn a_crash_before_the_answer_keeps_the_restore_pending_and_it_prompts_again() {
+    let d = tempdir().unwrap();
+    let id = submit_restore(d.path(), PLAN);
+    {
+        let mut s = open(d.path());
+        let _asking = s.begin_answer_at(&id, PLAN, t0(), &AuditOnly).unwrap();
+        // the process dies here: no resolve, the store is dropped
+    }
+    let s = open(d.path());
+    assert_eq!(s.pending().len(), 1, "still pending after the crash");
+    assert!(s.grants().is_empty(), "nothing was granted");
+    drop(s);
+    // the reservation of the dead prompt ends; a later answer prompts anew
+    let later = t0() + Duration::minutes(30);
+    let ch = hello(approve, later);
+    answer_via(d.path(), &id, PLAN, &ch, later).unwrap();
+    assert_eq!(
+        ch.consent.shown.borrow().len(),
+        1,
+        "the person was asked again"
+    );
+    assert_eq!(open(d.path()).grants().len(), 1);
+}
+
+/// Cancel closes the request (as for any pending request, #4).
+#[test]
+fn cancel_closes_a_restore_request() {
+    let d = tempdir().unwrap();
+    let id = submit_restore(d.path(), PLAN);
+    answer_via(d.path(), &id, PLAN, &hello(cancel, t0()), t0()).unwrap();
+    let s = open(d.path());
+    assert!(s.pending().is_empty());
+    assert!(s.grants().is_empty());
+}
+
+/// An approval that carries an end is not for a one-use request.
+#[test]
+fn a_restore_approval_with_an_end_is_refused() {
+    let d = tempdir().unwrap();
+    let id = submit_restore(d.path(), PLAN);
+    let mut s = open(d.path());
+    let asking = s.begin_answer_at(&id, PLAN, t0(), &AuditOnly).unwrap();
+    let timed = Outcome::Approved(Approval {
+        kind: KindId::RestorePlan,
+        subject: asking.request.subject.clone(),
+        requester: who("agentlife"),
+        approved_at: t0(),
+        expires_at: Some(t0() + Duration::hours(1)),
+    });
+    assert!(s
+        .resolve_at(&asking.reservation, &timed, t0(), &AuditOnly)
+        .is_err());
+    assert!(s.grants().is_empty());
+}
+
+/// Revoking everything also ends an unspent restore approval.
+#[test]
+fn revoke_all_ends_an_unspent_restore_approval() {
+    let d = tempdir().unwrap();
+    let id = submit_restore(d.path(), PLAN);
+    answer_via(d.path(), &id, PLAN, &hello(approve, t0()), t0()).unwrap();
+    let mut s = open(d.path());
+    assert_eq!(s.revoke_all_at(t0()).unwrap(), 1);
+    let subject = crate::request::restore_plan_subject(PLAN).unwrap();
+    assert!(s
+        .spend_one_use(KindId::RestorePlan, &subject, &who("agentlife"))
+        .is_err());
+}
+
+/// One plan, one use: while an approval for a plan is unspent, no second
+/// request for it can be made, and a second request made earlier cannot be
+/// approved into a second use either.
+#[test]
+fn two_approvals_for_one_plan_never_give_two_uses() {
+    let d = tempdir().unwrap();
+    // two requests made before either is answered (two roles, so not deduped)
+    let (id_a, id_b) = {
+        let mut s = open(d.path());
+        let a = s
+            .submit_at(&restore("agentlife", PLAN), &Grant::OneUse, PLAN, t0())
+            .unwrap();
+        let b = s
+            .submit_at(&restore("second-role", PLAN), &Grant::OneUse, PLAN, t0())
+            .unwrap();
+        (a, b)
+    };
+    answer_via(d.path(), &id_a, PLAN, &hello(approve, t0()), t0()).unwrap();
+    // the second tap cannot become a second grant
+    let err = answer_via(d.path(), &id_b, PLAN, &hello(approve, t0()), t0()).unwrap_err();
+    assert!(err.contains("unspent"), "{err}");
+    assert_eq!(open(d.path()).grants().len(), 1);
+    // and a new request is refused while one is waiting to be spent
+    let mut s = open(d.path());
+    let err = s
+        .submit_at(&restore("third-role", PLAN), &Grant::OneUse, PLAN, t0())
+        .unwrap_err();
+    assert!(err.contains("unspent"), "{err}");
+    // once spent, a fresh request for the same plan is allowed again
+    let subject = crate::request::restore_plan_subject(PLAN).unwrap();
+    s.spend_one_use(KindId::RestorePlan, &subject, &who("agentlife"))
+        .unwrap();
+    assert!(s
+        .submit_at(&restore("third-role", PLAN), &Grant::OneUse, PLAN, t0())
+        .is_ok());
+}

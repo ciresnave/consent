@@ -99,7 +99,7 @@ pub(super) fn is_what_was_requested(
     reserved_at: DateTime<Utc>,
 ) -> bool {
     match (asked, ap.expires_at) {
-        (Grant::Forever, None) => true,
+        (Grant::Forever | Grant::OneUse, None) => true,
         (Grant::Until(t), Some(e)) => e == *t,
         (Grant::For { secs }, Some(e)) => Duration::try_seconds(*secs)
             .and_then(|d| e.checked_sub_signed(d))
@@ -139,6 +139,24 @@ impl Store {
         self.trustworthy()?;
         check_bound_hash(bound_hash)?;
         req.check_subject()?;
+        // a restore is bound to exactly the plan it names: bound_hash IS the
+        // plan hash, so the consumer's hash of the plan it holds now decides
+        if req.kind == KindId::RestorePlan
+            && crate::request::parse_restore_plan_subject(&req.subject) != Some(bound_hash)
+        {
+            return Err(
+                "the bound_hash of a restore request must be the plan hash its subject names"
+                    .into(),
+            );
+        }
+        if req.kind.max() == crate::request::MaxGrant::OneUse
+            && self.has_unspent(req.kind, &req.subject, now)
+        {
+            return Err(format!(
+                "an unspent {:?} approval for '{}' already exists: spend it, or revoke it, first",
+                req.kind, req.subject
+            ));
+        }
         let role = req.requester.role.as_str();
         if role.chars().count() > MAX_ROLE_CHARS {
             return Err(format!(

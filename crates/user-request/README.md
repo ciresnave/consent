@@ -24,6 +24,17 @@ code requesting something from a user could use them interchangeably"*.
 |---|---|---|
 | `Secret` (with-secret) | any **finite** length: the requester states it, the person sees the end (loudly past today) and may refuse (board 134); never forever (PM ruling) | this requester only; a lane restart voids it |
 | `LaneDialogBypass` (lane-restart) | **FOREVER** | one lane's one dialog (`lane 'fuel', dialog 'trust'`, shown whole in the prompt); any requester may use it |
+| `RestorePlan` (agentlife) | **ONE USE**: no duration, never forever (board 150, CireSnave 2026-10-08: *"One-shot."*) | one frozen plan (subject `plan <hash>`; `bound_hash` is the same hash); any requester may use it, because a restore after a reboot is asked for by a new process |
+
+### One-shot kinds (`RestorePlan`)
+
+A one-use approval has no end. It is **spent** by `Store::spend_one_use` (an audited revocation), which the
+consumer calls *before* the restore runs: a second use is refused, and a crash mid-run needs a fresh
+approval. It binds exactly one plan: a request whose `bound_hash` differs from the hash in its subject is
+refused, and a plan that changed after the request voids it without asking. A restored-after-restart request
+re-prompts like any other (#4), and Cancel closes it. The prompt shows who, what (the plan) and `one use`.
+A request for any duration, date or forever is refused, never clamped. It does not cover other plans, wider
+permission modes (`bypassPermissions` stays PM-only), stop or park, or later wakes.
 
 ### Kinds that can be granted forever
 

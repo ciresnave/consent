@@ -278,6 +278,54 @@ mod tests {
         ));
     }
 
+    fn restore() -> Request {
+        req(
+            KindId::RestorePlan,
+            "agentlife",
+            "plan 1f0e9d8c",
+            "reboot",
+            true,
+        )
+    }
+
+    /// Board 150: the prompt is who, what, and "one use"; the approval has no
+    /// end (it is spent when the restore runs, not when a clock says).
+    #[test]
+    fn a_one_use_approval_says_one_use_and_has_no_end() {
+        let ch = channel(|| ConsentOutcome::Approved, Span::days(3));
+        match ch.present(&restore(), &Grant::OneUse, WAIT) {
+            Outcome::Approved(a) => {
+                assert_eq!(a.kind, KindId::RestorePlan);
+                assert_eq!(
+                    a.expires_at, None,
+                    "a clock must not end a one-use approval"
+                );
+            }
+            o => panic!("{o:?}"),
+        }
+        assert_eq!(
+            ch.consent.asked.borrow()[0],
+            "Who: lane 'agentlife'\nWants: restore lanes: plan 1f0e9d8c\nDuration: one use"
+        );
+    }
+
+    /// Anything that asks a restore for a duration is refused before a prompt.
+    #[test]
+    fn a_restore_asked_for_a_duration_is_refused_without_a_prompt() {
+        let ch = channel(|| ConsentOutcome::Approved, Span::minutes(1));
+        for g in [
+            Grant::for_duration(Span::hours(1)),
+            Grant::Until(t0() + Span::hours(1)),
+            Grant::Forever,
+        ] {
+            assert!(matches!(
+                ch.present(&restore(), &g, WAIT),
+                Outcome::Refused(_)
+            ));
+        }
+        assert!(ch.consent.asked.borrow().is_empty(), "prompted anyway");
+    }
+
     #[test]
     fn a_forever_approval_has_no_end() {
         let ch = channel(|| ConsentOutcome::Approved, Span::days(3));
