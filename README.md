@@ -27,6 +27,12 @@ This repository was split out of [`ciresnave/OverMind`](https://github.com/cires
 continue OverMind's (0.11.1) so an installed binary still says which release it came from. Both
 crates share one version.
 
+## Where data lives
+
+Both crates keep their state under `%LOCALAPPDATA%\OverMind\` (`user-request\`, `with-secret\`).
+The directory name is a leftover from where the code started, and is kept so existing vaults and
+approvals keep working; renaming it would orphan them.
+
 ## Development
 
 ```
