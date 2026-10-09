@@ -58,9 +58,9 @@ HEADER_WINDOW = 10
 
 #: The gate's own floor. If the tree ever holds fewer source files than this,
 #: the query is broken rather than the tree suddenly minimal. Set below the real
-#: count (40) on purpose: this catches a glob that matches nothing or almost
+#: count on purpose: this catches a glob that matches nothing or almost
 #: nothing, not ordinary deletion.
-MINIMUM_FILES = 35
+MINIMUM_FILES = 20  # 26 source files at import into ciresnave/consent
 
 #: Paths this gate must NOT require a header on, each with the reason it is here.
 #: Empty, and CHECKED rather than asserted - see `survey_copyright`.
