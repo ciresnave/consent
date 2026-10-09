@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/user-request", "crates/with-secret"]
+
+# One version for the whole project (CIRESNAVE-EXPECTATIONS.md 2.2). Continues
+# OverMind's number (0.11.1) so an installed binary still says which release it came from.
+[workspace.package]
+version = "0.11.1"
+edition = "2021"
+# Floor set by the deps: lane-state 0.11.1 and sysinfo 0.39.6 require 1.95 (measured: 1.91 fails).
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ciresnave/consent"
+
+# Published crates.io versions only: no path or git dependencies across repos.
+[workspace.dependencies]
+lane-state = "0.11.1"

@@ -1,0 +1,754 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+"""Every source file declares the workspace licence, and keeps declaring it.
+
+    python3 .github/spdx_gate.py            # check
+    python3 .github/spdx_gate.py --self-test
+
+A SWEEP DOES NOT FIX A PROPERTY THAT REGROWS. `fuel` stamped 795 files on
+2026-08-19 and had drifted to 823/833 by 2026-09-10 -- not because anything was
+undone, but because ten files were added afterwards and nothing was watching.
+The sweep is the one-off; this is the part that lasts.
+
+WHAT THIS REFUSES TO DO, AND WHY EACH ONE IS DELIBERATE:
+
+  * It never WRITES. A gate that repairs the thing it measures reports success
+    forever and tells you nothing about whether anyone is maintaining it.
+
+  * It never treats a DIFFERENT identifier as a failure to be corrected.
+    `fuel-examples/src/bs1770.rs` is a verbatim Apache-2.0-ONLY third-party
+    work, and fuel's blanket sweep stamped `MIT OR Apache-2.0` onto it --
+    asserting a licence grant nobody made. Files whose licence is somebody
+    else's decision belong in HOLDOUT below, by name, with a reason.
+
+  * It refuses to pass on an EMPTY population. `0 of 0 files` is 100% compliant
+    by arithmetic and means the glob matched nothing -- a renamed directory, a
+    moved workspace, a typo in an extension. The comforting number and the
+    broken query are the same number, and nobody audits good news.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import os
+import pathlib
+import shutil
+import subprocess  # noqa: S404 - fixed argv, no shell, no caller input
+import sys
+import tempfile
+
+LICENCE = "MIT OR Apache-2.0"
+# ⚠️ THIS REPOSITORY BUILT THE SWEEP AND WAS 0/47 UNTIL THE COMMIT THAT ADDED
+# THIS FILE. It stamped seven other repositories before stamping itself, which
+# is the shape of every measurement defect found here tonight: the instrument is
+# the last thing anybody points at itself.
+#
+# `.py` and `.ts` verified against `git ls-files` rather than assumed: 47 .py,
+# plus markdown, yaml and toml that are not source. `.rs` added 2026-09-18 with
+# this repo's first Rust crate (lane-restart) - found by the gate's own
+# UNCOVERED EXTENSION check, which exists precisely so a new source language
+# is not this file's blind spot the way `.py`-only once was Python's.
+EXTENSIONS = (".py", ".ts", ".sh", ".rs")
+
+#: How far into a file the header may sit. Measured, not guessed: across 2,100
+#: real .rs files in this portfolio (fuel, kiss-ref, lightbulb, synapse), 851
+#: SPDX lines sit at line index 0, one at index 4, and NONE at index >= 10.
+HEADER_WINDOW = 10
+
+#: The gate's own floor. If the tree ever holds fewer source files than this,
+#: the query is broken rather than the tree suddenly minimal. Set below the real
+#: count (40) on purpose: this catches a glob that matches nothing or almost
+#: nothing, not ordinary deletion.
+MINIMUM_FILES = 35
+
+#: Paths this gate must NOT require a header on, each with the reason it is here.
+#: Empty, and CHECKED rather than asserted - see `survey_copyright`.
+#:
+#: ⚠️ THREE FILES HERE MATCH `-i copyright` AND ALL THREE ARE THIS PROJECT'S OWN
+#: PROSE: `tools/spdx.py` and `tools/preflight.py` discuss third-party notices,
+#: and `tests/test_spdx.py` carries FIXTURE STRINGS naming Hugging Face and a
+#: made-up vendor. They are test data, not vendored code.
+#:
+#: ⚠️ WHICH IS EXACTLY WHY THE CLASSIFIER IS A CONTROLLED PREDICATE AND NOT A
+#: COUNT. A repository whose subject is licence headers will always contain the
+#: word, in growing numbers, and no number written in a comment survives that.
+#:
+#: An entry here that matches no file is an ERROR below -- a holdout that
+#: protects nothing reads exactly like one with nothing to protect, right up
+#: until the file it named is renamed and then stamped.
+HOLDOUT: dict[str, str] = {}
+
+#: 🔴 EXTENSIONS IS ITSELF A POPULATION CLAIM, AND NOTHING USED TO CHECK IT.
+#: Measured at `fuel` d37e446e: its ratchet enumerates `*.rs` and reports
+#: 834/834 forever while 203 tracked source files - 147 `.slang`, 20 `.glsl`,
+#: 19 `.py`, 16 `.metal` - sit outside its population entirely, three of them
+#: carrying Apple and third-party copyright with no SPDX at all.
+#:
+#: ⚠️ A PROPERTY ASSERTED OVER THE WRONG POPULATION IS STILL THE WRONG
+#: POPULATION, and a scoped ratchet's number goes UP as the blind spot grows.
+#:
+#: This repo had the same shape at smaller scale: `.ts` x2 and `.sh` x1 sat
+#: outside a `.py`-only list. So the list is now CHECKED: any tracked extension
+#: that is source must be in EXTENSIONS or declined below, by name, with a
+#: reason.
+#:
+#: ⚠️ IT DOES NOT FULLY CLOSE - `SOURCE_EXTENSIONS` is itself a hand-written
+#: list, which is the defect class this whole gate keeps finding. What it does
+#: is turn a SILENT omission into a LOUD one, which is the whole of the win.
+SOURCE_EXTENSIONS = frozenset({
+    ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".java",
+    ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".kt", ".scala", ".php",
+    ".rb", ".pl", ".sh", ".bash", ".ps1", ".sql", ".lua", ".zig", ".dart",
+    ".cu", ".cuh", ".cl", ".comp", ".vert", ".frag", ".geom", ".glsl", ".wgsl",
+    ".hlsl", ".metal", ".slang",
+})
+
+#: Source extensions present in the tree and deliberately NOT stamped, each with
+#: the reason. ⚠️ A DECISION ON THE RECORD, not an omission - and an entry here
+#: naming an extension the tree does not have reds, like every other stale list
+#: in this file.
+NOT_STAMPED: dict[str, str] = {}
+
+MARKER = "SPDX-License-Identifier:"
+
+
+def normalise(identifier: str) -> str:
+    """Canonical form for COMPARISON only. `Apache-2.0 OR MIT` and
+    `MIT OR Apache-2.0` are the same grant, and one repo in this portfolio
+    spells it each way. A false conflict standing next to a true one trains
+    the reader to dismiss both."""
+    text = identifier.strip()
+    for joiner in (" OR ", " or "):
+        if joiner in text:
+            return " OR ".join(sorted(p.strip() for p in text.split(joiner)))
+    return text
+
+
+def declared(text: str) -> str | None:
+    """The identifier a file declares, or None.
+
+    Split on the marker, never a regex: an earlier `[\\w.-]+(?: OR [\\w.-]+)?`
+    truncated `MIT OR Apache-2.0` to `MIT OR Apache`, which made every
+    correctly-stamped file look wrong and would have had a second pass append a
+    duplicate header to all of them.
+    """
+    for line in text.splitlines()[:HEADER_WINDOW]:
+        if MARKER in line:
+            value = line.split(MARKER, 1)[1].strip()
+            for terminator in ("*/", "-->", "*)"):
+                if value.endswith(terminator):
+                    value = value[: -len(terminator)].strip()
+            return value or None
+    return None
+
+
+def _git_z(root: pathlib.Path, *args: str, ok_codes=(0,)):
+    """Run one git command with NUL-separated output. Returns (ok, names).
+
+    ⚠️ ONE CALL SITE, BECAUSE COPIES OF AN INVOCATION ARE WHAT DRIFT. This file
+    had three, and two of them disagreed with each other twice over:
+
+      · `tools/spdx.py` used `-z` and this gate did not, so the SWEEPER and its
+        own CHECKER read the same list two ways. A filename with a non-ASCII
+        character came back quoted and octal-escaped, which is not a path that
+        exists, and a perfectly good file reported as UNREADABLE.
+      · `_git_z_all` accepted exit code 1 from `ls-files`, copied from the grep
+        wrapper where 1 means "no matches". `ls-files` never returns 1.
+
+    ⚠️ `ok_codes` IS EXPLICIT AT THE CALL SITE RATHER THAN HIDDEN HERE, because
+    the two conventions are exactly what drifted. Measured, not assumed:
+
+        git ls-files  with / without matches -> 0 ;  outside a repo -> 128
+        git grep      no matches             -> 1 ;  with matches   -> 0
+
+    So `ls-files` passes `ok_codes=(0,)` and `grep` passes `(0, 1)`, and a
+    reader sees which convention a caller means without leaving the line.
+
+    ⚠️ `ok=False` IS NOT AN EMPTY RESULT. Callers that treat an empty list as a
+    PASS must be able to tell "ran, found nothing" from "could not run", and
+    they could not when each site decided for itself.
+
+    ⚠️ `shutil.which` SEARCHES `PATH`. This docstring claimed it made the binary
+    independent of the environment, and a reviewer caught it on 2026-09-16.
+    Measured: a directory prepended to `PATH` holding a fake `git` wins. So the
+    environment chooses which `git` runs, exactly as it chooses the `python3`
+    that runs this file - a runner with a hostile `PATH` has already lost.
+    What IS fixed here: list-form argv, explicit `shell=False`, and the only
+    interpolated paths are this script's own parent directory or a temporary
+    directory the self-test created.
+    """
+    git = shutil.which("git")
+    if git is None:
+        print("FAIL: no `git` on PATH.", file=sys.stderr)
+        return False, []
+    proc = subprocess.run(  # noqa: S603 - fixed argv, shell=False, see docstring
+        [git, "-C", str(root), *args],
+        capture_output=True, encoding=None, shell=False, check=False)
+    if proc.returncode not in ok_codes:
+        # ⚠️ stderr is REPORTED, never discarded. A failing git call and a git
+        # call that found nothing both yield an empty list, and only one of them
+        # should ever be reportable as a clean result.
+        print(f"FAIL: git {args[0]}: "
+              f"{proc.stderr.decode('utf-8', 'replace').strip()[:200]}",
+              file=sys.stderr)
+        return False, []
+    text = proc.stdout.decode("utf-8", "replace")
+    return True, [n for n in text.split(chr(0)) if n]
+
+
+def tracked_sources(root: pathlib.Path) -> list[str] | None:
+    """Tracked files matching EXTENSIONS, or None if the listing FAILED.
+
+    ⚠️ `None` AND `[]` ARE DIFFERENT ANSWERS. This returned `[]` on failure,
+    and a caller comparing against MINIMUM_FILES then printed "the GLOB is
+    broken, not the tree" - which is the right VERDICT with the wrong
+    DIAGNOSIS, and sends the next reader to check a glob that is fine.
+
+    ⚠️ I WROTE A COMMENT ACKNOWLEDGING THAT AND CALLING IT TOLERABLE BECAUSE
+    THE FLOOR CATCHES IT. A gate returning the right verdict with the wrong
+    diagnosis is the defect this session has spent all night naming, and a
+    comment conceding a defect is not a fix for it.
+    """
+    # ⚠️ `:(icase)`, BECAUSE A GIT PATHSPEC IS CASE-SENSITIVE EVEN WHERE THE
+    # FILESYSTEM IS NOT. Measured on git 2.55 with `core.ignorecase` unset,
+    # false and true alike: `*.rs` lists `lower.rs` and misses `UPPER.RS`,
+    # while `extensions_of` lowercases - so `UPPER.RS` counted as covered by
+    # the census and was never audited by anything. A reviewer found it.
+    ok, names = _git_z(root, "ls-files", "-z", "--",
+                       *(f":(icase)*{e}" for e in EXTENSIONS), ok_codes=(0,))
+    return names if ok else None
+
+
+#: Files allowed to contain the word "copyright". ⚠️ A PATTERN, NOT A COUNT.
+#: Licence texts contain it by definition; a changelog records licence changes;
+#: this script discusses copyright in its own comments and so matches itself.
+#: ⚠️ MATCHED ON THE BASENAME, NOT THE PATH. A substring test over the whole
+#: path exempts anything beneath a directory whose name contains one of these -
+#: `vendor/LICENSE-deps/foo.rs` would pass unexamined. Contrived here, where
+#: nothing is vendored; not contrived in the three repos this gate also runs in,
+#: two of which vendor third-party source.
+COPYRIGHT_EXPECTED = ("LICENSE", "LICENCE", "COPYING", "CHANGELOG", "NOTICE",
+                      "spdx_gate.py", "spdx.py", "preflight.py", "test_spdx.py",
+                      # ⚠️ FIFTH TIME A DETECTOR HERE HAS MATCHED SOMETHING
+                      # WRITTEN TO DESCRIBE IT. `gate_fleet.py` compares
+                      # deployments of THIS script and explains the
+                      # copyright survey at length, so the survey finds it.
+                      # Exempted rather than reworded: its subject genuinely
+                      # IS licence tooling, like the three above it.
+                      "gate_fleet.py")
+
+
+def extensions_of(names) -> set[str]:
+    """Every extension among `names`, lower-cased, "no extension" removed.
+
+    ⚠️ PURE AND SEPARATE SO THAT THE SELF-TEST CALLS IT. Until 2026-09-16
+    the suffix controls re-derived `PurePosixPath(...).suffix` themselves, so
+    putting `rsplit(".")` BACK into this derivation still passed 29 of 29.
+    A CONTROL THAT EXERCISES A COPY OF THE CODE TESTS THE COPY.
+    """
+    # ⚠️ `PurePosixPath.suffix`, NOT `rsplit(".")`. Filed as a LOW-RISK style
+    # nitpick and it is a correctness bug - measured on real path shapes:
+    #
+    #     some.dir/file    rsplit -> ".dir/file"   suffix -> none
+    #     a.b.c/README     rsplit -> ".c/readme"   suffix -> none
+    #     .gitignore       rsplit -> ".gitignore"  suffix -> none
+    #
+    # A dot in a DIRECTORY name, or a dotfile with no extension, produced a
+    # fabricated extension.
+    #
+    # ⚠️ `PurePosixPath` RATHER THAN `Path`, AND NOT FOR THE REASON IT LOOKS
+    # LIKE. Measured on win32, where `Path` is `WindowsPath`: the two agree on
+    # ALL 7 real path shapes tested, because WindowsPath accepts "/" happily.
+    # They diverge on exactly one input - a filename containing a BACKSLASH
+    # after a dot:
+    #
+    #     "a.rs" + chr(92) + "b"   WindowsPath -> ""   PurePosixPath -> ".rs\b"
+    #
+    # ⚠️ A BACKSLASH IN A GIT PATH IS PART OF THE FILENAME, NOT A SEPARATOR.
+    # `git ls-files -z` emits POSIX paths raw on every platform, so the POSIX
+    # reading is the correct one and WindowsPath would silently split a name.
+    #
+    # This is a fact about GIT, not about Python - and it is chosen for
+    # correctness of interpretation, NOT because `Path` was observed to fail.
+    # No repo here has such a filename, so the two are equivalent today.
+    present = {pathlib.PurePosixPath(n).suffix.lower() for n in names}
+    present.discard("")
+    return present
+
+
+def census(present: set[str], exts, not_stamped) -> tuple[list, list]:
+    """(uncovered, stale) for a tree whose extensions are `present`.
+
+    ⚠️ PURE FOR THE SAME REASON AS `extensions_of`. The census controls
+    redid this arithmetic inline, so reverting the staleness fix below -
+    comparing against `source_present` again - still passed all of them.
+    """
+    source_present = present & SOURCE_EXTENSIONS
+    uncovered = sorted(source_present - set(exts) - set(not_stamped))
+    # ⚠️ AGAINST EVERY PRESENT EXTENSION, NOT JUST THE SOURCE ONES.
+    # `not_stamped` means "present in this tree and deliberately not
+    # stamped"; the staleness question is whether it is STILL PRESENT,
+    # not whether it is still classified as source. Comparing against
+    # `source_present` reported vulkane's `.spv` and `.xml` as stale
+    # while both sit in its tree - a decline of a NON-SOURCE extension
+    # could never be recorded without redding.
+    stale = sorted(set(not_stamped) - present)
+    return uncovered, stale
+
+
+def uncovered_extensions(root: pathlib.Path):
+    """Tracked SOURCE extensions that EXTENSIONS does not cover, and stale
+    NOT_STAMPED entries.
+
+    ⚠️ THE RATCHET'S OWN POPULATION, CHECKED. Without this, adding `.wgsl`
+    tomorrow escapes the gate silently and the pass rate goes UP - because the
+    denominator never learns about the new files. That is how `fuel` reports
+    834/834 while 203 tracked source files sit outside its scan.
+    """
+    ok, names = _git_z_all(root)
+    if not ok:
+        return None, None
+    return census(extensions_of(names), EXTENSIONS, NOT_STAMPED)
+
+
+def _git_z_all(root: pathlib.Path):
+    """Every tracked path. Separate from `tracked_sources`, which is scoped."""
+    # ⚠️ `ok_codes=(0,)` - `ls-files` NEVER exits 1. The `(0, 1)` this used to
+    # carry was copied from the grep wrapper, where 1 means "no matches".
+    return _git_z(root, "ls-files", "-z", ok_codes=(0,))
+
+
+def _expected(path: str) -> bool:
+    base = path.rsplit("/", 1)[-1]
+    return any(tag in base for tag in COPYRIGHT_EXPECTED)
+
+
+def survey_copyright(root: pathlib.Path) -> list[str] | None:
+    """Tracked files carrying a copyright notice that are NOT expected to, or
+    None if the survey COULD NOT RUN.
+
+    ⚠️ `None` AND `[]` ARE DIFFERENT ANSWERS AND THE DIFFERENCE IS THE POINT.
+    An empty list is the PASS condition here, so a survey that failed to run
+    returning `[]` would be indistinguishable from a clean tree - and this
+    gate's entire justification is that the holdout is CHECKED rather than
+    asserted. A CHECK THAT SILENTLY NO-OPS ON FAILURE IS AN ASSERTION WITH A
+    FUNCTION WRAPPED AROUND IT.
+
+    ⚠️ THIS IS THE HOLDOUT'S JUSTIFICATION, MOVED OUT OF A COMMENT AND INTO CI.
+    The comment used to state a COUNT: `-> 0` with a control of `-> 8`. That
+    count drifted TWICE IN FOUR DAYS from two unrelated PRs, with neither author
+    doing anything wrong - a changelog gained the word, then this script did.
+
+    ⚠️ A COUNT CANNOT SURVIVE TREE GROWTH; A PROPERTY CAN. The thing the count
+    was standing in for is "every -i copyright hit is a licence file or this
+    script", and that is assertable. A COMMENT CANNOT GUARD - demonstrated twice
+    inside this one file, first by the stale figure and then by the correction
+    that vouched for it.
+
+    ⚠️ AND IT FIRES EXACTLY WHERE THE HOLDOUT WOULD BE NEEDED. A new file
+    carrying somebody else's copyright notice is precisely the case where a
+    blanket sweep asserts a licence grant nobody made - `bs1770.rs` in `fuel`,
+    Khronos's `vk.xml` in `vulkane`, Apple's kernels in `fuel`'s .metal files.
+    """
+    # ⚠️ `ok_codes=(0, 1)` HERE, and that is the difference the helper makes
+    # visible: `git grep` exits 1 for "no matches", which is a RESULT and not
+    # a failure. `ls-files` above passes (0,) because it never returns 1.
+    ok, names = _git_z(root, "grep", "-l", "-i", "-z", "copyright",
+                       ok_codes=(0, 1))
+    if not ok:
+        # ⚠️ None, not []. [] is the PASS condition for this check, so a
+        # survey that COULD NOT RUN must not be reportable as a clean tree.
+        return None
+    return sorted(n for n in names if not _expected(n))
+
+
+def audit(root: pathlib.Path, files: list[str]):
+    """(missing, wrong, unreadable) over `files`, skipping HOLDOUT entries."""
+    expected = normalise(LICENCE)
+    missing, wrong, unreadable = [], [], []
+    for rel in files:
+        if rel in HOLDOUT:
+            continue
+        try:
+            text = (root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            unreadable.append((rel, str(exc)))
+            continue
+        found = declared(text)
+        if found is None:
+            missing.append(rel)
+        elif normalise(found) != expected:
+            wrong.append((rel, found))
+    return missing, wrong, unreadable
+
+
+def report(files: list, missing: list, wrong: list, unreadable: list,
+           stale: list) -> None:
+    """Print the findings. Separated from deciding them so that changing how
+    this reads cannot change what it concluded."""
+    clean = len(files) - len(missing) - len(wrong) - len(unreadable) - len(HOLDOUT)
+    print(f"{clean}/{len(files)} tracked source files declare {LICENCE!r}"
+          + (f"  ({len(HOLDOUT)} held out)" if HOLDOUT else ""))
+    rows = ([("MISSING", rel, "") for rel in missing]
+            + [("DIFFERENT", rel, f" declares {found!r}") for rel, found in wrong]
+            + [("UNREADABLE", rel, f": {why}") for rel, why in unreadable]
+            + [("STALE HOLDOUT", rel,
+                " matches no tracked file - it protects NOTHING") for rel in stale])
+    for label, rel, suffix in rows:
+        print(f"  {label}  {rel}{suffix}")
+
+
+def explain(missing: list, wrong: list) -> None:
+    """What to do about each kind of finding. Separate from the finding itself,
+    because the remedies differ in KIND: one is mechanical, one is a decision."""
+    if missing:
+        print()
+        print("Add the header as the FIRST line, above any `//!` inner docs:")
+        print(f"    // {MARKER} {LICENCE}")
+        print("A shebang stays on line 1 and the header goes below it.")
+    if wrong:
+        print()
+        print("A file declaring a DIFFERENT licence is NOT a formatting error.")
+        print("Changing it asserts a grant its author may not have made. Either")
+        print("the declaration is right and the file belongs in HOLDOUT with a")
+        print("reason, or it is wrong and that is a decision for the owner.")
+
+
+def main(argv: list[str]) -> int:
+    if "--self-test" in argv:
+        return self_test()
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    files = tracked_sources(root)
+    if files is None:
+        # ⚠️ THE LISTING FAILED - a different fact from "the tree is small",
+        # and saying so is the whole point of returning None rather than [].
+        print("FAIL: could not list the tracked files. This is NOT a claim "
+              "about the tree.", file=sys.stderr)
+        return 1
+
+    if len(files) < MINIMUM_FILES:
+        print(f"FAIL: found {len(files)} source files, expected at least "
+              f"{MINIMUM_FILES}.")
+        print("      This gate reports 100% compliance on an empty set, so it")
+        print("      fails here instead. The GLOB is broken, not the tree.")
+        return 1
+
+    missing, wrong, unreadable = audit(root, files)
+    stale = sorted(set(HOLDOUT) - set(files))
+    # ⚠️ THE HOLDOUT'S JUSTIFICATION, CHECKED RATHER THAN ASSERTED IN PROSE.
+    uncovered, stale_ns = uncovered_extensions(root)
+    if uncovered is None:
+        print("FAIL: could not enumerate the tree to check EXTENSIONS.",
+              file=sys.stderr)
+        return 1
+    for ext in uncovered:
+        print(f"  UNCOVERED EXTENSION  {ext} is tracked source and is not in "
+              f"EXTENSIONS or NOT_STAMPED")
+    for ext in stale_ns:
+        print(f"  STALE NOT_STAMPED  {ext} is declined but no longer present")
+    if uncovered:
+        print()
+        print("A source extension outside EXTENSIONS is invisible to this gate,")
+        print("and the pass rate RISES as the blind spot grows. Add it to")
+        print("EXTENSIONS, or to NOT_STAMPED with the reason it is excluded.")
+
+    surveyed = survey_copyright(root)
+    if surveyed is None:
+        # ⚠️ The survey could not run. Refusing is the only honest outcome: a
+        # clean report here would be a claim nobody measured.
+        return 1
+    unexpected = [n for n in surveyed if n not in HOLDOUT]
+    report(files, missing, wrong, unreadable, stale)
+    explain(missing, wrong)
+    for rel in unexpected:
+        print(f"  COPYRIGHT NOTICE  {rel} is not a licence file and is not "
+              f"in HOLDOUT")
+    if unexpected:
+        print()
+        print("A file carrying somebody else's copyright notice may not be")
+        print("ours to license. Decide, then add it to HOLDOUT with the")
+        print("reason, or to COPYRIGHT_EXPECTED if the match is incidental.")
+    return 1 if (missing or wrong or stale or unreadable or unexpected
+                 or uncovered or stale_ns) else 0
+
+
+def _fixture_names() -> tuple[str, str, str, str]:
+    """(probe, stray, upper, stray_ext) for the populated fixture repo."""
+    stray_ext = sorted(SOURCE_EXTENSIONS - set(EXTENSIONS) - set(NOT_STAMPED))[0]
+    return (f"probe{EXTENSIONS[0]}", f"stray{stray_ext}",
+            f"UPPER{EXTENSIONS[0].upper()}", stray_ext)
+
+
+@contextlib.contextmanager
+def _git_ceiling(path: str):
+    """Stop git's repository discovery at `path` while the block runs."""
+    saved = os.environ.get("GIT_CEILING_DIRECTORIES")
+    os.environ["GIT_CEILING_DIRECTORIES"] = path
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop("GIT_CEILING_DIRECTORIES", None)
+        else:
+            os.environ["GIT_CEILING_DIRECTORIES"] = saved
+
+
+def _git_fixture(base: pathlib.Path):
+    """(outside, empty, full) built under `base`, or None if git could not.
+
+    `full` tracks a probe carrying a notice, a source file whose extension is
+    not covered, and an upper-case spelling of a covered extension. Built
+    through `_git_z`, so this file still runs git from exactly one place.
+    """
+    probe, stray, upper, _ = _fixture_names()
+    outside, empty, full = base / "outside", base / "empty", base / "full"
+    for d in (outside, empty, full):
+        d.mkdir()
+    (full / probe).write_text("# Copyright 2020 Somebody Else\n",
+                              encoding="utf-8")
+    for name in (stray, upper):
+        (full / name).write_text("x = 1\n", encoding="utf-8")
+    # ⚠️ `base` IS ITSELF A REPO, so `outside` is outside only because of the
+    # ceiling. Otherwise dropping `_git_ceiling` would pass on every machine
+    # whose temp dir is not already inside a checkout - which is every
+    # machine this has run on - and the ceiling would be untested.
+    built = (_git_z(base, "init", "-q")[0]
+             and _git_z(empty, "init", "-q")[0]
+             and _git_z(full, "init", "-q")[0]
+             and _git_z(full, "add", "--", probe, stray, upper)[0])
+    return (outside, empty, full) if built else None
+
+
+def _git_fixture_controls() -> list[tuple[str, bool]] | None:
+    """Controls for the paths that run GIT, against real throwaway repos.
+
+    ⚠️ FOUR DEFECTS FIXED IN THIS FILE, PUT BACK ONE AT A TIME, ALL PASSED THE
+    SELF-TEST AS IT STOOD ON 2026-09-16 - each mutation checked as applied:
+
+        listing failure returns [] instead of None        PASS 29/29
+        survey failure returns [] instead of None         PASS 29/29
+        `rsplit(".")` back in the extension derivation    PASS 29/29
+        staleness against source extensions only          PASS 29/29
+
+    The first two had no control at all: nothing in the self-test ran git. The
+    last two had controls that exercised a COPY of the logic.
+
+    ⚠️ THREE FIXTURES, BECAUSE TWO CANNOT SEPARATE THE ANSWERS. Outside a repo
+    must give None; an EMPTY repo must give [] and not None; a populated repo
+    must find what is in it. A helper that always returned None passes the
+    first alone, and one that always returned [] passes the second alone.
+    Measured before writing:
+
+        outside a repo    ls-files -> 128   grep -> 128
+        empty repo        ls-files -> 0     grep -> 1
+        populated repo    ls-files -> 0     grep -> 0
+
+    `GIT_CEILING_DIRECTORIES` stops discovery at the temp dir, so "outside a
+    repo" holds even when the temp dir sits beneath somebody's checkout.
+
+    None means the fixture could not be built, which the caller counts as a
+    FAILURE rather than a skip: this gate cannot run without git either.
+    """
+    probe, _, upper, stray_ext = _fixture_names()
+    with tempfile.TemporaryDirectory() as tmp, _git_ceiling(tmp):
+        dirs = _git_fixture(pathlib.Path(tmp))
+        if dirs is None:
+            return None
+        outside, empty, full = dirs
+        # ⚠️ A FAILURE MUST BE REPORTED AS WELL AS RETURNED - `_git_z` prints
+        # stderr rather than discarding it - so capture and count.
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            listed = tracked_sources(outside)
+            surveyed = survey_copyright(outside)
+            censused = uncovered_extensions(outside)
+        full_listing = tracked_sources(full) or []
+        return [
+            ("outside a repo: listing is None, not []", listed is None),
+            ("outside a repo: survey is None, not []", surveyed is None),
+            ("outside a repo: census is None, not []",
+             censused == (None, None)),
+            ("outside a repo: all three failures are REPORTED",
+             said.getvalue().count("FAIL: git") == 3),
+            ("empty repo: listing is [], not None",
+             tracked_sources(empty) == []),
+            ("empty repo: survey is [], not None",
+             survey_copyright(empty) == []),
+            ("empty repo: census ran",
+             uncovered_extensions(empty)[0] == []),
+            ("populated repo: listing finds the probe",
+             probe in full_listing),
+            ("populated repo: listing finds an UPPER-CASE extension",
+             upper in full_listing),
+            ("populated repo: listing is exactly the matching files",
+             sorted(full_listing) == sorted([probe, upper])),
+            ("populated repo: survey finds the notice",
+             survey_copyright(full) == [probe]),
+            (f"populated repo: census finds {stray_ext}",
+             uncovered_extensions(full)[0] == [stray_ext]),
+        ]
+
+
+def _declared_controls() -> list[tuple[str, bool]]:
+    """`declared` against the header shapes found across the portfolio."""
+    cases = [
+        ("bare header", "// SPDX-License-Identifier: MIT OR Apache-2.0\n", "MIT OR Apache-2.0"),
+        ("above inner docs", "// SPDX-License-Identifier: MIT OR Apache-2.0\n//! docs\n", "MIT OR Apache-2.0"),
+        ("below a shebang", "#!/usr/bin/env python3\n# SPDX-License-Identifier: MIT OR Apache-2.0\n", "MIT OR Apache-2.0"),
+        ("block comment", "/* SPDX-License-Identifier: MIT OR Apache-2.0 */\n", "MIT OR Apache-2.0"),
+        ("nothing at all", "fn main() {}\n", None),
+        # ⚠️ The truncation control. A regex-based reader returned `MIT OR
+        # Apache` here and every correct file in the portfolio looked wrong.
+        ("full dual identifier", "// SPDX-License-Identifier: MIT OR Apache-2.0\n", "MIT OR Apache-2.0"),
+        # ⚠️ The self-counting control. This gate declares its own licence in
+        # its own header AND names it in a string constant; a reader that
+        # scanned the whole file would find the constant too.
+        ("beyond the window", "\n" * 12 + "// SPDX-License-Identifier: MIT\n", None),
+    ]
+    out = []
+    for name, sample, expected in cases:
+        got = declared(sample)
+        out.append((f"{name}: {got!r}"
+                    + ("" if got == expected else f"  expected {expected!r}"),
+                    got == expected))
+    return out
+
+
+def _classification_controls() -> list[tuple[str, bool]]:
+    # ⚠️ CONTROLS FOR THE COPYRIGHT SURVEY'S CLASSIFIER. Needs no git: the part
+    # that can silently rot is the PREDICATE, and `COPYRIGHT_EXPECTED` is a list
+    # somebody will extend. A manual both-arms run proves the checker worked
+    # that afternoon; nothing re-runs it when the list gains an entry.
+    classifications = [
+        ("LICENSE-MIT", True),
+        ("crates/kiss-ref-core/LICENSE-APACHE", True),
+        ("CHANGELOG.md", True),
+        (".github/spdx_gate.py", True),
+        ("src/lib.rs", False),
+        ("crates/kiss-ops-vocab/src/lib.rs", False),
+        # ⚠️ THE ONE THAT MATTERS, and it failed before basename anchoring: a
+        # substring test over the whole PATH exempts everything beneath a
+        # directory whose name contains a tag.
+        ("vendor/LICENSE-deps/foo.rs", False),
+        ("third_party/NOTICE-files/kernel.cu", False),
+    ]
+    return [(f"{path} is {'exempt' if expected else 'examined'}",
+             _expected(path) == expected)
+            for path, expected in classifications]
+
+
+def _suffix_controls() -> list[tuple[str, bool]]:
+    # ⚠️ CONTROLS FOR THE EXTENSION CENSUS. `uncovered_extensions` needs git,
+    # but the part that ROTS is the path->extension derivation and the set
+    # arithmetic, and neither does. A reviewer asked for this and was right:
+    # a manual run proves it worked that afternoon; nothing re-runs it when
+    # SOURCE_EXTENSIONS or NOT_STAMPED grows.
+    #
+    # The two dotted directories and the dotfile FAIL against the
+    # `rsplit(".")` form this replaced, so they are controls rather than
+    # decoration.
+    #
+    # ⚠️ THIS SAID "THE FIRST THREE", AND UNTIL 2026-09-16 IT WAS FALSE TWICE:
+    # the first entry passes under `rsplit`, and no entry could fail at all,
+    # because each re-derived the suffix instead of calling the gate. They
+    # call `extensions_of` now, and the claim was re-measured by putting the
+    # original `rsplit` back: exactly those three red.
+    suffixes = [
+        ("src/lib.rs", ".rs"),
+        ("some.dir/file", ""),
+        ("a.b.c/README", ""),
+        (".gitignore", ""),
+        ("x/y.tar.gz", ".gz"),
+        ("crates/core/LICENSE-MIT", ""),
+    ]
+    out = []
+    for path, expected in suffixes:
+        got = extensions_of([path])
+        out.append((f"extensions_of([{path!r}]) == {sorted(got)!r}",
+                    got == {expected} - {""}))
+    return out
+
+
+def _census_controls() -> list[tuple[str, bool]]:
+    # The census arithmetic, with the tree's extensions supplied directly.
+    census_cases = [
+        ("a source ext outside the list is UNCOVERED",
+         {".rs", ".md"}, (".py",), {}, [".rs"], []),
+        ("a source ext IN the list is covered",
+         {".rs", ".md"}, (".rs",), {}, [], []),
+        ("a source ext DECLINED is covered",
+         {".rs", ".md"}, (".py",), {".rs": "why"}, [], []),
+        # ⚠️ THE CASE THAT WAS BROKEN: declining a PRESENT but NON-SOURCE
+        # extension must not read as stale.
+        ("a present NON-source decline is not stale",
+         {".rs", ".spv"}, (".rs",), {".spv": "generated"}, [], []),
+        ("an ABSENT decline IS stale",
+         {".rs"}, (".rs",), {".slang": "gone"}, [], [".slang"]),
+    ]
+    return [(name, census(present, exts, not_stamped) == (want_unc, want_stale))
+            for name, present, exts, not_stamped, want_unc, want_stale
+            in census_cases]
+
+
+def _equivalence_controls() -> list[tuple[str, bool]]:
+    equivalences = [("MIT OR Apache-2.0", "Apache-2.0 OR MIT", True),
+                    ("Apache-2.0", "MIT OR Apache-2.0", False),
+                    ("MIT", "MIT OR Apache-2.0", False)]
+    return [(f"{a!r} {'==' if same else '!='} {b!r}",
+             (normalise(a) == normalise(b)) == same)
+            for a, b, same in equivalences]
+
+
+def _own_bytes_controls() -> list[tuple[str, bool]]:
+    """This file's own line endings."""
+    # ⚠️ THIS FILE'S OWN BYTES. On 2026-09-16 every deployment of this gate
+    # was stored with ~200 lines ending CR CR LF - left by line-based edits
+    # that re-added CRLF to lines already ending in CR. Git calls such a file
+    # `-text` and never normalises it, and Python reads each lone CR as a line
+    # break, so a traceback's line number was up to 159 lines away from the
+    # line GitHub shows. The fleet comparison cannot see it: an AST has no
+    # line endings. A CR NOT FOLLOWED BY LF is the defect; a CRLF checkout on
+    # Windows is not, so this counts the difference rather than any CR.
+    own = pathlib.Path(__file__).read_bytes()
+    lone_cr = own.count(b"\r") - own.count(b"\r\n")
+    return [("this file has no lone CR"
+             + ("" if lone_cr == 0 else f": {lone_cr} found"), lone_cr == 0)]
+
+
+def self_test() -> int:
+    """⚠️ The gate's own positive controls. A checker nobody has watched FAIL
+    is a checker nobody has evidence works.
+
+    ⚠️ EACH GROUP LIVES IN A `*_controls` HELPER, and every helper calls the
+    gate's own functions rather than a copy of their logic - the copy is what
+    let four fixed bugs come back unnoticed. Split out of one function when it
+    reached cyclomatic complexity 14; `tools/gate_fleet.py` counts the
+    helpers' case tables, so its number still matches the one printed here.
+    """
+    results = (_declared_controls() + _classification_controls()
+               + _suffix_controls() + _census_controls()
+               + _equivalence_controls() + _own_bytes_controls())
+    fixture = _git_fixture_controls()
+    if fixture is None:
+        # ⚠️ A fixture that cannot be built is a FAILURE, never a skip: this
+        # gate cannot run without git either.
+        results.append(("the git fixture could be built", False))
+    else:
+        results += fixture
+
+    failures = 0
+    for label, ok in results:
+        failures += not ok
+        print(f"  {'ok  ' if ok else 'FAIL'}  {label}")
+
+    # ⚠️ SUMMED, NOT WRITTEN DOWN. This line said "10 controls" while 18 ran,
+    # for one commit - a stale count inside the run whose entire purpose is to
+    # kill stale counts. A COUNT CANNOT SURVIVE ITS OWN LIST GROWING.
+    print(f"{chr(10)}{'PASS' if not failures else 'FAIL'}: {len(results)} "
+          f"controls, {failures} failed")
+    return 1 if failures else 0
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

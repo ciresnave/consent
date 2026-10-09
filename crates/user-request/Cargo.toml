@@ -2,6 +2,7 @@
 name = "user-request"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Ask a person to approve something, through an interchangeable channel (Windows Hello first), with an approver-chosen grant. See crates/user-request/README.md."

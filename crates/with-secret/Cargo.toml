@@ -2,6 +2,7 @@
 name = "with-secret"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Runs one command with one secret, after its owner approves via Windows Hello. Stops accidental exposure, not deliberate misuse - see WITH-SECRET-DESIGN.md section 3."
@@ -10,7 +11,7 @@ description = "Runs one command with one secret, after its owner approves via Wi
 chrono = { version = "0.4.45", features = ["serde"] }
 getrandom = "0.4.3"
 lane-state.workspace = true
-user-request = { path = "../user-request" }
+user-request = { version = "0.11.1", path = "../user-request" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"

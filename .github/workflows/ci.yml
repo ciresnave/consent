@@ -1,0 +1,106 @@
+name: CI
+
+# Job shapes are copied from OverMind's and PersistAnt's proven workflows
+# (fmt/clippy/test matrix, SPDX gate; MSRV read from the manifest, cargo deny).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # A separate job, so it stays informative when a toolchain step dies first.
+  spdx:
+    name: Every source file declares the licence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      # The gate's own controls run FIRST: a checker nobody has watched fail
+      # is a checker nobody has evidence works.
+      - name: Self-test the SPDX gate
+        run: python3 .github/spdx_gate.py --self-test
+      - name: Every tracked source file declares the licence
+        run: python3 .github/spdx_gate.py
+
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-latest is not decoration: both crates are Windows Hello /
+        # DPAPI code whose real branches compile only there.
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --no-fail-fast
+
+  docs:
+    name: docs build (warnings are errors)
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo doc
+        run: cargo doc --workspace --no-deps
+
+  msrv:
+    name: MSRV (rust-version in Cargo.toml)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Read the floor from the manifest so the job cannot drift from it.
+      - name: Read rust-version
+        id: msrv
+        run: |
+          v=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          test -n "$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust ${{ steps.msrv.outputs.version }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: cargo check on the MSRV toolchain
+        run: |
+          rustc --version
+          cargo check --workspace --all-targets
+
+  deny:
+    name: cargo deny (advisories, licences, bans, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
