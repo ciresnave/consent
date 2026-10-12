@@ -50,13 +50,23 @@ after the next local midnight is described as `*** LONGER THAN TODAY: ... ***`.
 The requester states the duration it wants. The Windows Hello prompt names it, and the person approves
 it or cancels. CireSnave, 2026-10-07 (board 134, verbatim): *"The message in the Windows Hello prompt can be three things: 1) Who is making the request.  2) What secret they are requesting.  3) What duration they want access to that secret for.  Then I either approve the Windows Hello prompt or cancel it."*
 
-The prompt is exactly three lines:
+The prompt was exactly those three lines until board 173. CireSnave, 2026-10-12 (verbatim): *"four things, all prompts"* (who / what / duration / why). It is now three vouched lines, then the reason the requester gave, set apart and labelled as the requester's claim:
 
 ```
 Who: lane 'overmind'
 Wants: use a secret: TJ_DB
 Duration: for 1h 00m 00s, until 2026-10-07 18:38:32 -07:00
+
+Reason given: seed the prod db
 ```
+
+- Every kind shows it. The text is `Request.reason`: control and invisible characters become spaces
+  (it cannot forge or reorder a line above it), it is clipped at 300 characters with `…`, and an
+  empty or blank one reads `(none given)` so an absent reason is visible as absent.
+- The reason comes after Duration on purpose: a dialog that cuts the tail cuts the reason first,
+  never the duration. Who and Duration are still never clipped.
+- The reason is what the requester said, not something this crate checked. The summary and the
+  command are still not shown; they go to the audit log.
 
 - **Approve** grants exactly that duration. **Cancel** is a denial: no grant, and the gate's
   10-minute cooldown starts.

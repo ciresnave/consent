@@ -2,12 +2,13 @@
 //! The seam for asking. Item 81 (c) asked for a prompt "naming the secret,
 //! the requesting lane, the command and the reason"; board 134 (CireSnave,
 //! 2026-10-07) replaced it with three things: who, which secret, and how
-//! long.
+//! long. Board 173 (CireSnave, 2026-10-12: "four things, all prompts") added
+//! the requester's reason as a fourth, set apart from the three.
 //!
 //! The access prompt is the user-request store's
 //! (`user_request::channel::prompt_text`): Who, Wants and Duration (to the
-//! second, and loud past today). The command and the reason go to the
-//! access log, not the prompt.
+//! second, and loud past today), then `Reason given:` (the `--reason` text,
+//! cleaned and clipped). The command goes to the access log, not the prompt.
 
 pub use user_request::consent::{Consent, ConsentOutcome};
 
