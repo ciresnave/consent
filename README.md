@@ -16,16 +16,20 @@ after they have. Both are Windows-first: the approval channel that is built toda
 - **`with-secret` stops accidental exposure, not deliberate misuse.** A process that is given a
   secret can print it, and any process running as the same Windows user can decrypt the vault
   (design doc section 3).
-- **Neither crate is published.** Nothing here goes to crates.io without the owner's per-crate
-  approval.
+- **`user-request` is published to crates.io (0.11.1); `with-secret` is not.** Nothing here goes to
+  crates.io without the owner's per-crate approval.
 - The live Windows Hello tests are `#[ignore]`d and need a person at the desktop; CI does not run them.
 
 ## History
 
 This repository was split out of [`ciresnave/OverMind`](https://github.com/ciresnave/OverMind) with
-`git filter-repo`, so the commits that touched these crates keep their history. Version numbers
-continue OverMind's (0.11.1) so an installed binary still says which release it came from. Both
-crates share one version.
+`git filter-repo`, so the commits that touched these crates keep their history (the hashes differ
+from OverMind's, the diffs do not). The source of every file under `crates/`, `WITH-SECRET-DESIGN.md`,
+`docs/WITH-SECRET-RUNBOOK.md` and `docs/superpowers/plans/2026-10-01-with-secret.md` is
+byte-identical to OverMind `main` at `57fae94` (0.12.0); only the two crate manifests differ (they
+inherit `rust-version` from the workspace here). Version numbers continue OverMind's (0.12.0) so an
+installed binary still says which release it came from. Both crates share one version. See
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## Where data lives
 
