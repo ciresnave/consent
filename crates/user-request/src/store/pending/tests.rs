@@ -176,11 +176,11 @@ fn a_restored_request_prompts_the_person_again() {
     assert!(granted.is_some());
     let shown = ch.consent.shown.borrow();
     assert_eq!(shown.len(), 1, "the person was asked exactly once");
-    // board 134: exactly who, what, how long
+    // board 134: who, what, how long; board 173: then the reason, apart
     assert_eq!(
         shown[0],
         format!(
-            "Who: lane 'overmind'\nWants: use a secret: TJ_DB\nDuration: {}",
+            "Who: lane 'overmind'\nWants: use a secret: TJ_DB\nDuration: {}\n\nReason given: seed the db",
             hour().describe(t0())
         )
     );
@@ -657,8 +657,8 @@ fn submit_restore(dir: &Path, plan: &str) -> String {
         .unwrap()
 }
 
-/// The Hello prompt shows exactly three things (who, what, how long), and
-/// the last is "one use".
+/// The Hello prompt shows who, what and how long (the last is "one use"),
+/// then the requester's reason apart from them (board 173).
 #[test]
 fn a_restore_prompt_shows_who_what_and_one_use() {
     let d = tempdir().unwrap();
@@ -669,7 +669,9 @@ fn a_restore_prompt_shows_who_what_and_one_use() {
     assert_eq!(shown.len(), 1);
     assert_eq!(
         shown[0],
-        format!("Who: lane 'agentlife'\nWants: restore lanes: plan {PLAN}\nDuration: one use")
+        format!(
+            "Who: lane 'agentlife'\nWants: restore lanes: plan {PLAN}\nDuration: one use\n\nReason given: reboot"
+        )
     );
 }
 

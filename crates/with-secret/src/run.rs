@@ -541,18 +541,22 @@ mod tests {
     }
 
     /// Board 134 (CireSnave, 2026-10-07): the prompt is who, which secret
-    /// and how long. The command and the reason are in the access log.
+    /// and how long; board 173 (2026-10-12) adds the reason as a fourth,
+    /// apart from them. The command is only in the access log.
     #[test]
-    fn the_command_and_reason_go_to_the_log_not_the_prompt() {
+    fn the_reason_is_in_the_prompt_and_the_command_only_in_the_log() {
         let d = store_dir();
         let ch = hello(ConsentOutcome::Approved);
         let mut log = vec![];
         run(&d, &ch, &args(&["psql"]), &mut log).unwrap();
         let prompt = &asked(&ch)[0];
-        assert_eq!(prompt.lines().count(), 3, "{prompt}");
+        assert_eq!(prompt.lines().count(), 5, "{prompt}");
         assert!(prompt.contains("Wants: use a secret: TJ_DB"), "{prompt}");
         assert!(!prompt.contains("psql"), "{prompt}");
-        assert!(!prompt.contains("seed the prod db"), "{prompt}");
+        assert!(
+            prompt.ends_with("\n\nReason given: seed the prod db"),
+            "{prompt}"
+        );
         assert!(
             log.iter()
                 .all(|e| e.command == "psql" && e.reason == "seed the prod db"),

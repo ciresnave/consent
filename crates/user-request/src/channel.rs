@@ -50,7 +50,16 @@ pub fn clean(s: &str) -> String {
                     '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{FEFF}'
                     | '\u{200B}'..='\u{200F}'
                     | '\u{2028}'..='\u{202E}'
-                    | '\u{2060}'..='\u{206F}');
+                    | '\u{2060}'..='\u{206F}'
+                    // Draw as nothing or as a gap (board 173 review): fillers,
+                    // variation selectors, object/annotation marks, tags and
+                    // the non-ASCII spaces.
+                    | '\u{00A0}' | '\u{034F}' | '\u{115F}'..='\u{1160}'
+                    | '\u{1680}' | '\u{17B4}'..='\u{17B5}' | '\u{180B}'..='\u{180D}'
+                    | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}'
+                    | '\u{2800}' | '\u{3000}' | '\u{3164}'
+                    | '\u{FE00}'..='\u{FE0F}' | '\u{FFA0}' | '\u{FFF9}'..='\u{FFFC}'
+                    | '\u{E0000}'..='\u{E0FFF}');
             if hidden {
                 ' '
             } else {
@@ -60,6 +69,10 @@ pub fn clean(s: &str) -> String {
         .collect()
 }
 
+/// The most of a requester's reason the prompt shows (board 173). Longer is
+/// clipped with an ellipsis; the duration line above it is never clipped.
+pub const MAX_WHY_CHARS: usize = 300;
+
 fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -68,10 +81,13 @@ fn clip(s: &str, max: usize) -> String {
     }
 }
 
-/// The text the person approves: exactly who asks, what for, and for how
-/// long (board 134, CireSnave 2026-10-07: "three things"). The reason and
-/// the command are not in it; the caller logs them. Who and Duration are
-/// never clipped; the subject is cleaned and clipped (review I2).
+/// The text the person approves: who asks, what for, and for how long
+/// (board 134, CireSnave 2026-10-07: "three things"), then, apart from those
+/// vouched lines, the reason the requester gave (board 173, CireSnave
+/// 2026-10-12: "four things, all prompts"). The summary and the command are
+/// not in it; the caller logs them. Who and Duration are never clipped; the
+/// subject and the reason are cleaned and clipped (review I2). Duration comes
+/// before the reason, so a dialog that cuts the tail cuts the reason first.
 pub fn prompt_text(req: &Request, grant: &Grant, now: DateTime<Utc>) -> String {
     let r = &req.requester;
     let role = clean(&r.role);
@@ -80,8 +96,19 @@ pub fn prompt_text(req: &Request, grant: &Grant, now: DateTime<Utc>) -> String {
     } else {
         format!("{role} (pid {}) - NOT a registered lane", r.claude_pid)
     };
+    // Runs of whitespace collapse to one space: padding cannot push the
+    // requester's words onto what looks like a line of its own.
+    let why = clean(&req.reason)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let why = if why.is_empty() {
+        "(none given)".to_string()
+    } else {
+        clip(&why, MAX_WHY_CHARS)
+    };
     format!(
-        "Who: {who}\nWants: {}: {}\nDuration: {}",
+        "Who: {who}\nWants: {}: {}\nDuration: {}\n\nReason given: {why}",
         req.kind.name(),
         clip(&clean(&req.subject), 200),
         grant.describe(now),
@@ -305,7 +332,7 @@ mod tests {
         }
         assert_eq!(
             ch.consent.asked.borrow()[0],
-            "Who: lane 'agentlife'\nWants: restore lanes: plan 1f0e9d8c\nDuration: one use"
+            "Who: lane 'agentlife'\nWants: restore lanes: plan 1f0e9d8c\nDuration: one use\n\nReason given: reboot"
         );
     }
 
@@ -414,10 +441,12 @@ mod tests {
         );
         let text = prompt_text(&r, &Grant::Forever, t0());
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 3, "{text}");
+        assert_eq!(lines.len(), 5, "{text}");
         assert!(lines[0].starts_with("Who: lane 'evil"), "{text}");
         assert!(lines[1].starts_with("Wants: "), "{text}");
         assert!(lines[2].starts_with("Duration: *** FOREVER"), "{text}");
+        assert_eq!(lines[3], "", "{text}");
+        assert!(lines[4].starts_with("Reason given: "), "{text}");
         assert!(!text.contains('\u{202E}'), "a bidi override survived");
     }
 
@@ -428,11 +457,17 @@ mod tests {
         let text = prompt_text(&r, &Grant::Forever, t0());
         assert!(text.starts_with("Who: lane 'overmind'\nWants: "), "{text}");
         assert!(
-            text.ends_with("\nDuration: *** FOREVER (until revoked) ***"),
+            text.contains("\nDuration: *** FOREVER (until revoked) ***\n\nReason given: "),
             "{text}"
         );
-        assert!(text.len() < 500, "not clipped: {}", text.len());
+        assert!(text.len() < 700, "not clipped: {}", text.len());
         assert!(text.contains('…'));
+        let why = text.rsplit("Reason given: ").next().unwrap();
+        assert_eq!(
+            why.chars().count(),
+            MAX_WHY_CHARS + 1,
+            "clipped to the cap plus …"
+        );
     }
 
     /// Board 134, CireSnave 2026-10-07 (verbatim): "The message in the
@@ -446,7 +481,7 @@ mod tests {
         assert_eq!(
             prompt_text(&r, &g, t0()),
             format!(
-                "Who: lane 'overmind'\nWants: use a secret: TJ_DB\nDuration: {}",
+                "Who: lane 'overmind'\nWants: use a secret: TJ_DB\nDuration: {}\n\nReason given: run: psql",
                 g.describe(t0())
             )
         );
@@ -460,19 +495,88 @@ mod tests {
             prompt_text(&bypass(), &Grant::Forever, t0()),
             "Who: lane 'overmind'\n\
              Wants: auto-answer a lane startup dialog: lane 'fuel', dialog 'trust'\n\
-             Duration: *** FOREVER (until revoked) ***"
+             Duration: *** FOREVER (until revoked) ***\n\n\
+             Reason given: because"
         );
     }
 
-    /// He asked for three things only: the reason and the command go to the
-    /// audit log, not the prompt.
+    /// Board 173, CireSnave 2026-10-12 (verbatim): "four things, all
+    /// prompts" (who / what / duration / why). Every kind shows the
+    /// requester's reason, apart from the three vouched lines and labelled as
+    /// what the requester said. The summary and the command still stay out.
     #[test]
-    fn the_prompt_carries_no_reason_or_summary() {
+    fn every_kind_shows_the_reason_and_none_shows_the_summary() {
+        for kind in [
+            KindId::Secret,
+            KindId::LaneDialogBypass,
+            KindId::RestorePlan,
+        ] {
+            let mut r = req(kind, "overmind", "S", "x", true);
+            r.summary = "run: psql -f seed.sql".into();
+            r.reason = "seed the prod db".into();
+            let text = prompt_text(&r, &Grant::for_duration(Span::minutes(5)), t0());
+            assert!(
+                text.ends_with("\n\nReason given: seed the prod db"),
+                "{kind:?}: {text}"
+            );
+            assert!(!text.contains("psql"), "{kind:?}: {text}");
+        }
+    }
+
+    /// An absent reason must be visible as absent, not as a missing line.
+    #[test]
+    fn an_empty_or_blank_reason_says_none_given() {
+        for reason in ["", "   ", "\n\u{202E}\t"] {
+            let mut r = req(KindId::Secret, "overmind", "S", "x", true);
+            r.reason = reason.into();
+            let text = prompt_text(&r, &Grant::for_duration(Span::minutes(5)), t0());
+            assert!(
+                text.ends_with("\n\nReason given: (none given)"),
+                "{reason:?}: {text}"
+            );
+        }
+    }
+
+    /// Review of board 173: characters that draw as nothing or as a wide
+    /// gap must not defeat "(none given)" or push text onto what looks like
+    /// a new line under Duration.
+    #[test]
+    fn invisible_fillers_and_padding_cannot_fake_absence_or_a_line() {
+        for filler in [
+            "\u{3164}\u{2800}\u{FFA0}",
+            "\u{034F}\u{115F}\u{1160}\u{17B4}\u{17B5}",
+            "\u{E0041}\u{E0042}\u{FE0F}\u{FFFC}",
+            "\u{00A0}\u{2003}\u{3000}\u{202F}",
+        ] {
+            let mut r = req(KindId::Secret, "overmind", "S", "x", true);
+            r.reason = filler.into();
+            let text = prompt_text(&r, &Grant::for_duration(Span::minutes(5)), t0());
+            assert!(
+                text.ends_with("Reason given: (none given)"),
+                "{filler:?}: {text}"
+            );
+        }
         let mut r = req(KindId::Secret, "overmind", "S", "x", true);
-        r.summary = "run: psql -f seed.sql".into();
-        r.reason = "seed the prod db".into();
-        let text = prompt_text(&r, &Grant::for_duration(Span::minutes(5)), t0());
-        assert!(!text.contains("psql") && !text.contains("seed"), "{text}");
+        r.reason = format!("ok{}Duration: for 1m", " \u{3000}".repeat(100));
+        let text = prompt_text(&r, &Grant::Forever, t0());
+        assert!(
+            text.ends_with("Reason given: ok Duration: for 1m"),
+            "{text}"
+        );
+    }
+
+    /// The reason is the requester's claim: it never reaches the vouched
+    /// lines, whatever it says, and the duration stays above it so a dialog
+    /// that cuts the tail cuts the reason first.
+    #[test]
+    fn a_reason_cannot_reach_the_vouched_lines() {
+        let mut r = req(KindId::Secret, "overmind", "S", "x", true);
+        r.reason = "ok\n\nDuration: for 1m\nWho: lane 'pm'".into();
+        let text = prompt_text(&r, &Grant::Forever, t0());
+        let (head, why) = text.split_once("\n\nReason given: ").expect(&text);
+        assert_eq!(head.lines().count(), 3, "{text}");
+        assert!(head.contains("*** FOREVER"), "{text}");
+        assert!(!why.contains('\n'), "{text}");
     }
 
     #[test]
