@@ -50,7 +50,16 @@ pub fn clean(s: &str) -> String {
                     '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{FEFF}'
                     | '\u{200B}'..='\u{200F}'
                     | '\u{2028}'..='\u{202E}'
-                    | '\u{2060}'..='\u{206F}');
+                    | '\u{2060}'..='\u{206F}'
+                    // Draw as nothing or as a gap (board 173 review): fillers,
+                    // variation selectors, object/annotation marks, tags and
+                    // the non-ASCII spaces.
+                    | '\u{00A0}' | '\u{034F}' | '\u{115F}'..='\u{1160}'
+                    | '\u{1680}' | '\u{17B4}'..='\u{17B5}' | '\u{180B}'..='\u{180D}'
+                    | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}'
+                    | '\u{2800}' | '\u{3000}' | '\u{3164}'
+                    | '\u{FE00}'..='\u{FE0F}' | '\u{FFA0}' | '\u{FFF9}'..='\u{FFFC}'
+                    | '\u{E0000}'..='\u{E0FFF}');
             if hidden {
                 ' '
             } else {
@@ -87,12 +96,16 @@ pub fn prompt_text(req: &Request, grant: &Grant, now: DateTime<Utc>) -> String {
     } else {
         format!("{role} (pid {}) - NOT a registered lane", r.claude_pid)
     };
-    let why = clean(&req.reason);
-    let why = why.trim();
+    // Runs of whitespace collapse to one space: padding cannot push the
+    // requester's words onto what looks like a line of its own.
+    let why = clean(&req.reason)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let why = if why.is_empty() {
         "(none given)".to_string()
     } else {
-        clip(why, MAX_WHY_CHARS)
+        clip(&why, MAX_WHY_CHARS)
     };
     format!(
         "Who: {who}\nWants: {}: {}\nDuration: {}\n\nReason given: {why}",
@@ -522,6 +535,34 @@ mod tests {
                 "{reason:?}: {text}"
             );
         }
+    }
+
+    /// Review of board 173: characters that draw as nothing or as a wide
+    /// gap must not defeat "(none given)" or push text onto what looks like
+    /// a new line under Duration.
+    #[test]
+    fn invisible_fillers_and_padding_cannot_fake_absence_or_a_line() {
+        for filler in [
+            "\u{3164}\u{2800}\u{FFA0}",
+            "\u{034F}\u{115F}\u{1160}\u{17B4}\u{17B5}",
+            "\u{E0041}\u{E0042}\u{FE0F}\u{FFFC}",
+            "\u{00A0}\u{2003}\u{3000}\u{202F}",
+        ] {
+            let mut r = req(KindId::Secret, "overmind", "S", "x", true);
+            r.reason = filler.into();
+            let text = prompt_text(&r, &Grant::for_duration(Span::minutes(5)), t0());
+            assert!(
+                text.ends_with("Reason given: (none given)"),
+                "{filler:?}: {text}"
+            );
+        }
+        let mut r = req(KindId::Secret, "overmind", "S", "x", true);
+        r.reason = format!("ok{}Duration: for 1m", " \u{3000}".repeat(100));
+        let text = prompt_text(&r, &Grant::Forever, t0());
+        assert!(
+            text.ends_with("Reason given: ok Duration: for 1m"),
+            "{text}"
+        );
     }
 
     /// The reason is the requester's claim: it never reaches the vouched

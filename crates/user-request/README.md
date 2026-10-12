@@ -15,8 +15,9 @@ code requesting something from a user could use them interchangeably"*.
   its kind's maximum. A grant over the maximum is **refused, never clamped**.
 - `Channel`: one way to ask. `HelloChannel` (Windows Hello) is built; `SmsChannel` and `PushChannel`
   are designed for and answer `Unavailable` until built.
-- `prompt_text`: the text the person approves: three lines, who asks, what for, and for how long.
-  The requester line and the duration line are never clipped; the subject is.
+- `prompt_text`: the text the person approves: three lines (who asks, what for, for how long), then
+  the requester's reason under `Reason given:`. The requester line and the duration line are never
+  clipped; the subject and the reason are.
 
 ## Kinds
 
@@ -63,6 +64,9 @@ Reason given: seed the prod db
 - Every kind shows it. The text is `Request.reason`: control and invisible characters become spaces
   (it cannot forge or reorder a line above it), it is clipped at 300 characters with `…`, and an
   empty or blank one reads `(none given)` so an absent reason is visible as absent.
+- Runs of whitespace in it collapse to one space, and characters that draw as nothing or as a wide
+  gap (fillers, variation selectors, tags, non-ASCII spaces) count as spaces, so padding cannot
+  fake a line under Duration or fake an absent reason.
 - The reason comes after Duration on purpose: a dialog that cuts the tail cuts the reason first,
   never the duration. Who and Duration are still never clipped.
 - The reason is what the requester said, not something this crate checked. The summary and the
@@ -73,7 +77,8 @@ Reason given: seed the prod db
 - Nothing is typed, and there is no other window.
 - FOREVER and an end past local midnight are loud and distinct in the duration line.
 - A duration over the kind's maximum is refused before any prompt, never clamped.
-- The reason and the command are not in the prompt: the caller logs them (with-secret: its access log).
+- The command and the summary are not in the prompt: the caller logs them (with-secret: its access
+  log). The reason is, under `Reason given:`, as the requester's claim.
 - Hello proves the person was present and approved that text; it does not prove they read it.
 
 ## Who uses it
@@ -178,8 +183,8 @@ resolve(reservation, outcome)                 an approval makes the grant and sp
 withdraw(id)                                  the requester gives up (a prompt already up cannot land)
 ```
 
-- **The person sees what they always saw** (board 134): the Hello prompt alone, three lines, who, which
-  secret, how long. Nothing is typed. **Approve** grants exactly the requested length. **Cancel** refuses:
+- **The person sees what they always saw, plus the reason** (boards 134, 173): the Hello prompt alone,
+  three lines (who, which secret, how long) and the requester's `Reason given:`. Nothing is typed. **Approve** grants exactly the requested length. **Cancel** refuses:
   no grant, the request is closed, and the gate's 10-minute cooldown starts.
 - **What survives a restart:** every pending request, with its exact contents. It is in `grants.json`, so
   it is signed, anchored in the audit chain and covered by the integrity checks like a grant.

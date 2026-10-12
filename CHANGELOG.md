@@ -7,6 +7,7 @@ Version numbers continue OverMind's. The entries below 0.12.0 are the part of Ov
 
 - **The Windows Hello prompt gains a fourth line, for every kind** (board 173, CireSnave 2026-10-12, verbatim: *"four things, all prompts"*: who / what / duration / why). After the three vouched lines and a blank line it shows `Reason given: <Request.reason>`: cleaned (control and bidi characters become spaces), clipped at 300 characters with `…` (`channel::MAX_WHY_CHARS`), and `(none given)` when empty or blank. Duration stays above it, so a dialog that cuts the tail cuts the reason first. `Wants:` is unchanged (a restore still shows its plan hash). The summary and the command are still not shown.
 - Behaviour change for anything that matched the old three-line prompt text exactly (tests in this repo did; agentlife must fill `Request.reason` with the restore reason and lane list). No API change: `Request.reason` already existed and was already logged.
+- `channel::clean` (shared with with-secret's prompts) now also replaces characters that draw as nothing or as a wide gap (fillers U+3164/U+2800/U+FFA0 and the Hangul/Khmer/Mongolian ones, variation selectors, U+FFF9-FFFC, tags, non-ASCII spaces) with a space, and the reason's whitespace runs collapse to one space, so a reason of invisible characters reads `(none given)` and padding cannot fake a line under Duration (independent review, 2026-10-12).
 
 ## 0.12.0
 
