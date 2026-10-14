@@ -663,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "user-request"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "chacha20poly1305",
  "chrono",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "with-secret"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "chrono",
  "getrandom",
