@@ -3,6 +3,10 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.13.1
+
+- CI only: every GitHub Action is pinned to a release commit SHA (PM pin patch 2026-10-14); `dtolnay/rust-toolchain@stable` also gets an explicit `toolchain: stable`. No code change.
+
 ## 0.13.0
 
 - **The Windows Hello prompt gains a fourth line, for every kind** (board 173, CireSnave 2026-10-12, verbatim: *"four things, all prompts"*: who / what / duration / why). After the three vouched lines and a blank line it shows `Reason given: <Request.reason>`: cleaned (control and bidi characters become spaces), clipped at 300 characters with `…` (`channel::MAX_WHY_CHARS`), and `(none given)` when empty or blank. Duration stays above it, so a dialog that cuts the tail cuts the reason first. `Wants:` is unchanged (a restore still shows its plan hash). The summary and the command are still not shown.
