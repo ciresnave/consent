@@ -6,6 +6,10 @@ use std::time::Duration;
 
 use crate::consent::{Consent, ConsentOutcome};
 
+/// Which window owns the Windows Hello dialog. A window handle is a Windows
+/// concept, so this type does not exist elsewhere and the portable
+/// `HelloConsent::default()` call site needs no mention of it.
+#[cfg(windows)]
 #[derive(Clone, Copy, Debug, Default)]
 pub enum Owner {
     // ⚠️ Set from Task 0's measurement (WITH-SECRET-DESIGN.md §4): both owners
@@ -17,6 +21,7 @@ pub enum Owner {
 
 #[derive(Default)]
 pub struct HelloConsent {
+    #[cfg(windows)]
     pub owner: Owner,
 }
 
@@ -82,6 +87,26 @@ fn ask_windows(
 impl Consent for HelloConsent {
     fn ask(&self, _: &str, _: Duration) -> ConsentOutcome {
         ConsentOutcome::Unavailable("Windows Hello exists only on Windows".into())
+    }
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+    use crate::channel::HelloChannel;
+
+    /// U7: the construction a caller writes compiles on every OS, with no
+    /// platform-specific argument.
+    #[test]
+    fn the_same_call_site_builds_a_channel_on_every_os() {
+        let _ = HelloChannel::new(HelloConsent::default());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn off_windows_it_says_unavailable_never_approved() {
+        let o = HelloConsent::default().ask("x", Duration::from_secs(1));
+        assert!(matches!(o, ConsentOutcome::Unavailable(_)), "{o:?}");
     }
 }
 

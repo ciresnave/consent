@@ -3,6 +3,14 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## Unreleased (version allocated by the PM at gate time; Breaking for non-Windows builds)
+
+Linux port, upstream asks U1, U4, U7 (agentlife `docs/PORT-LINUX-PLAN.md` section 5). U2 waits on `lane-state` publishing `platform::state_dir`; U3, U5 wait on CireSnave; U6 is a standing NO.
+
+- **U1:** `locate::dir()` is `$XDG_STATE_HOME/OverMind/user-request`, else `~/.local/state/OverMind/user-request` off Windows (a relative `XDG_STATE_HOME` is ignored, per the XDG specification); Windows is unchanged (`%LOCALAPPDATA%`). New `locate::Env` and `locate::try_dir(&Env)` let every platform's answer be tested on any host. `USER_REQUEST_DIR` stays debug-only.
+- **U7 (Breaking off Windows):** `hello::Owner` and `HelloConsent::owner` exist only on Windows (a window handle is a Windows concept). `HelloChannel::new(HelloConsent::default())` is the same call site on every OS (tested). with-secret re-exports `Owner` only on Windows.
+- **U4:** no new dependencies; `cargo tree --target x86_64-unknown-linux-gnu -e normal` for user-request lists no `windows*` crate, and the workspace checks clean for that target.
+
 ## 0.13.1
 
 - CI only: every GitHub Action is pinned to a release commit SHA (PM pin patch 2026-10-14); `dtolnay/rust-toolchain@stable` also gets an explicit `toolchain: stable`. No code change.
