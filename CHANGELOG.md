@@ -3,6 +3,10 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.15.1 (docs only)
+
+- `docs/LINUX-PORT-DESIGN.md`: section 9 records CireSnave's ruling on the FIDO2 text surface (board 208: "208: accept"; S3 unblocked) and section 10 adds second-device approval: what a second device buys and cannot, the signed-statement design, the limits that remain, five options, and what it needs from CireSnave (relay, phone app, elevated enrolment). Design only; two independent audit rounds, the last revision not re-audited.
+
 ## 0.15.0 (S1 of docs/LINUX-PORT-DESIGN.md; `locate::PROTECTOR` changes type)
 
 - **U3, the key tier layer.** New `tiered` module: `TieredProtector` over `Tier`s, blob `UR1\0<tag>\0<tier blob>`, and the `keyfile` tier (XChaCha20-Poly1305 under a 32-byte key in `<state>/OverMind/user-request-kek`, mode 0600, owner and mode re-checked on every open). Only the tier named in a blob may open it; a missing or locked tier is an error that names it and nothing is re-wrapped. Windows is unchanged: DPAPI, raw unprefixed blobs.
