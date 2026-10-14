@@ -4,7 +4,7 @@
 //! any process running as this Windows user can decrypt the vault.
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
 use chrono::{Local, NaiveDate, Utc};
@@ -20,8 +20,6 @@ use with_secret::mask::{mask_json, masks_json, HashMask, StreamMasker};
 use with_secret::run::{authorize, parse_run, Approver, DEFAULT_WAIT};
 use with_secret::vault::*;
 use with_secret::{audit, dumpcheck, identity};
-
-const LANE_STATE_DIR: &str = "C:/Projects/.lane-state";
 
 fn data_dir() -> Result<PathBuf, String> {
     // ⚠️ TEST-ONLY override. Pointing it elsewhere reaches an EMPTY vault, not
@@ -111,7 +109,7 @@ fn run(args: &[String]) -> Result<u8, String> {
     let who = identity::resolve(
         &table,
         std::process::id(),
-        &identity::load_states(Path::new(LANE_STATE_DIR)),
+        &identity::load_states(&lane_state::platform::state_dir()),
     )?;
     let channel = HelloChannel::new(HelloConsent::default());
     let approver = Approver {

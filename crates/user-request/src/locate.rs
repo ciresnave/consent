@@ -193,6 +193,19 @@ mod tests {
         }
     }
 
+    /// The wiring, not just the pure helper: with no override the head copy
+    /// is the shared lane-state directory's file.
+    #[test]
+    fn head_copy_is_the_shared_state_dir_file() {
+        if env_override("USER_REQUEST_HEAD").is_none() {
+            assert_eq!(
+                head_copy(),
+                head_copy_in(&lane_state::platform::state_dir())
+            );
+            assert!(head_copy().is_absolute());
+        }
+    }
+
     #[test]
     fn linux_without_xdg_or_home_is_an_error_not_a_relative_path() {
         let e = env(false, None, None, None);
