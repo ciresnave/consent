@@ -127,14 +127,33 @@ pub fn binding(req: &Request) -> [u8; 32] {
 
 /// `binding` with the random part supplied, so the encoding is testable.
 pub fn binding_with(req: &Request, fresh: &[u8; 16]) -> [u8; 32] {
+    binding_over(
+        "user-request.v1.binding",
+        &[
+            req.kind.name().as_bytes(),
+            req.subject.as_bytes(),
+            req.requester.session_id.as_bytes(),
+        ],
+        fresh,
+    )
+}
+
+/// A binding for a consumer that asks without a `Request` (with-secret's
+/// vault set/remove): the domain string, each field length-prefixed, then 16
+/// fresh random bytes.
+pub fn binding_for(domain: &str, fields: &[&[u8]]) -> [u8; 32] {
+    let mut fresh = [0u8; 16];
+    getrandom::fill(&mut fresh).expect("the OS random source works");
+    binding_over(domain, fields, &fresh)
+}
+
+/// The one encoding: domain, then each field as a 4-byte big-endian length
+/// and the bytes, then the fresh bytes.
+pub fn binding_over(domain: &str, fields: &[&[u8]], fresh: &[u8; 16]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(b"user-request.v1.binding");
-    for field in [
-        req.kind.name().as_bytes(),
-        req.subject.as_bytes(),
-        req.requester.session_id.as_bytes(),
-    ] {
+    h.update(domain.as_bytes());
+    for field in fields {
         h.update((field.len() as u32).to_be_bytes());
         h.update(field);
     }

@@ -3,6 +3,14 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.15.4 (S6 of docs/LINUX-PORT-DESIGN.md / U8; additive, Windows behaviour unchanged)
+
+- **with-secret on Linux.** `platform` module: the vault directory resolves under the XDG state directory (Windows keeps `%LOCALAPPDATA%`); the vault key goes through the same tiered protector as the approvals store (purpose label `with-secret`, its own key file; `keyfile` tier, weaker than DPAPI and said so by `check` and the README); `vault set` has hidden input on Unix (termios); `main.rs` no longer names DPAPI or Hello concretely.
+- **`user_request::platform::platform_consent()`**: Windows Hello on Windows, physical presence elsewhere (the security key when built with `fido2`; none: `Unavailable`). One place every consumer asks the same way. `with-secret` forwards the `fido2` feature.
+- `vault set` / `vault remove` approvals are now bound (`ask_bound`, `channel::binding_for`) to the action and secret name, so a provider that signs signs that ask and no other.
+- Tests: `revoke --all` covers every kind on the keyfile tier; vault dir resolution per OS; protector round trip; blobs name their tier and do not open across tools; the platform consent is Hello on Windows only and never approves without a provider.
+- Not done: Secret Service / TPM2 tiers (S5), fprintd (S4), and the Linux process-table identity measurement (design measurement 3).
+
 ## 0.15.3 (S3 of docs/LINUX-PORT-DESIGN.md; additive, behind the opt-in `fido2` feature)
 
 - **`fido2` feature** (off by default; needs `pkg-config` and `libudev-dev` on Linux): `fido2::Fido2Provider`, a `PresenceProvider` over a security key (`ctap-hid-fido2` 3.6.0). `enroll` (also `user-request enroll`, PIN from `USER_REQUEST_FIDO2_PIN` if the key has one) makes a credential for the fixed relying-party id `user-request.local` and stores its id and public key. Each ask sends a `getAssertion` with the section 3 challenge; `Verified` only when the signature verifies against the enrolled key, the RP hash matches, the user-present flag is set and the signature counter did not go back (a counter that never moves is not checked). A cancel is `Cancelled`, the key's or our deadline `TimedOut`, no device or enrolment `Unavailable`; anything that fails verification is `Unavailable`, never `Approved`.

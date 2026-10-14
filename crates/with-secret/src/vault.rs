@@ -76,7 +76,9 @@ pub struct Vault {
     pub secrets: BTreeMap<String, Secret>,
 }
 
-/// Encrypt and decrypt bytes at rest. ⚠️ The real one is DPAPI at user scope
+/// Encrypt and decrypt bytes at rest. Off Windows this is the tiered
+/// protector (`platform.rs`), whose `keyfile` tier is WEAKER than DPAPI: it
+/// keeps the key in the same state tree as the vault. ⚠️ The real one is DPAPI at user scope
 /// (`dpapi.rs`): it protects against copies of the disk, NOT against another
 /// process running as the same user (design §3).
 pub trait Protector {
@@ -102,8 +104,7 @@ pub const AUDIT_FILE: &str = "access.log";
 pub const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 pub fn default_dir() -> Result<PathBuf, String> {
-    let base = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
-    Ok(PathBuf::from(base).join("OverMind").join("with-secret"))
+    crate::platform::try_default_dir(&user_request::locate::Env::current())
 }
 
 /// Write via a sibling temp file and rename, so a crash never leaves a

@@ -14,9 +14,8 @@ use user_request::locate;
 use user_request::request::KindId;
 use user_request::store::{AuditOnly, Store};
 use with_secret::consent::{store_prompt_text, Consent, ConsentOutcome};
-use with_secret::dpapi::DpapiProtector;
-use with_secret::hello::HelloConsent;
 use with_secret::mask::{mask_json, masks_json, HashMask, StreamMasker};
+use with_secret::platform::SelectedProtector;
 use with_secret::run::{authorize, parse_run, Approver, DEFAULT_WAIT};
 use with_secret::vault::*;
 use with_secret::{audit, dumpcheck, identity};
@@ -51,10 +50,10 @@ fn approvals_dir() -> Result<PathBuf, String> {
     locate::dir()
 }
 
-fn store() -> Result<VaultStore<DpapiProtector>, String> {
+fn store() -> Result<VaultStore<SelectedProtector>, String> {
     Ok(VaultStore {
         dir: data_dir()?,
-        protector: DpapiProtector,
+        protector: SelectedProtector::new(),
     })
 }
 
@@ -111,7 +110,7 @@ fn run(args: &[String]) -> Result<u8, String> {
         std::process::id(),
         &identity::load_states(&lane_state::platform::state_dir()),
     )?;
-    let channel = HelloChannel::new(HelloConsent::default());
+    let channel = HelloChannel::new(user_request::platform::platform_consent());
     let approver = Approver {
         dir: approvals_dir()?,
         protector: &locate::PROTECTOR,
@@ -183,7 +182,14 @@ fn spawn_masked(argv: &[String], name: &str, secret: &Secret) -> Result<u8, Stri
 }
 
 fn require_hello(action: &str, name: &str) -> Result<(), String> {
-    match HelloConsent::default().ask(&store_prompt_text(action, name), DEFAULT_WAIT) {
+    // bound to the action and the secret's name, so a provider that signs
+    // (a security key) signs this ask and no other
+    let binding = user_request::channel::binding_for(
+        "with-secret.v1.binding",
+        &[action.as_bytes(), name.as_bytes()],
+    );
+    let consent = user_request::platform::platform_consent();
+    match consent.ask_bound(&store_prompt_text(action, name), &binding, DEFAULT_WAIT) {
         ConsentOutcome::Approved => Ok(()),
         other => Err(format!("not {action}d: {other:?}")),
     }
@@ -290,13 +296,17 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
             Ok(0)
         }
         Some("check") => {
-            let p = DpapiProtector;
+            let p = SelectedProtector::new();
             let ok = p
                 .protect(b"with-secret-check")
                 .and_then(|b| p.unprotect(&b))
                 .map(|b| b == b"with-secret-check")
                 .unwrap_or(false);
-            println!("DPAPI round trip: {}", if ok { "ok" } else { "FAILED" });
+            println!(
+                "{} round trip: {}",
+                with_secret::platform::PROTECTION_NAME,
+                if ok { "ok" } else { "FAILED" }
+            );
             println!("Windows Hello: run `with-secret vault set` to see the prompt; `check` never prompts.");
             Ok(if ok { 0 } else { 1 })
         }
@@ -339,9 +349,42 @@ fn read_hidden(prompt: &str) -> Result<String, String> {
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
-#[cfg(not(windows))]
+/// Unix: echo off on the controlling terminal, restored afterwards. The
+/// person types a secret VALUE here; it is not an approval (see the stdin
+/// allowlist in `user-request/tests/no_terminal_channel.rs`).
+#[cfg(unix)]
+fn read_hidden(prompt: &str) -> Result<String, String> {
+    /// Puts the saved terminal mode back when dropped, so an error or a panic
+    /// cannot leave echo off. (A fatal signal still can: no handler is set.)
+    struct Restore(Option<libc::termios>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(t) = &self.0 {
+                unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, t) };
+            }
+        }
+    }
+    eprint!("{prompt}");
+    let fd = libc::STDIN_FILENO;
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    let have = unsafe { libc::tcgetattr(fd, &mut saved) } == 0;
+    let _restore = Restore(have.then_some(saved));
+    if have {
+        let mut quiet = saved;
+        quiet.c_lflag &= !libc::ECHO;
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &quiet) };
+    }
+    let mut line = String::new();
+    let r = std::io::stdin().read_line(&mut line);
+    drop(_restore);
+    eprintln!();
+    r.map_err(|e| e.to_string())?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
+}
+
+#[cfg(not(any(windows, unix)))]
 fn read_hidden(_: &str) -> Result<String, String> {
-    Err("vault set is Windows-only".into())
+    Err("vault set is not supported on this platform".into())
 }
 
 /// ⚠️ FAILS OPEN: any error exits 0 with a warning. A hook bug must not block

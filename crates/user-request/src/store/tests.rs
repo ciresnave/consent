@@ -219,6 +219,38 @@ fn revoke_and_revoke_all_persist_as_tombstones() {
     assert!(open(d.path()).active_at(t0()).is_empty());
 }
 
+/// Linux port U8: on the tiered (keyfile) protector, `revoke --all` ends
+/// every kind of grant, and the store reopens under the same tier.
+#[test]
+fn revoke_all_covers_every_kind_on_the_keyfile_tier() {
+    use crate::tiered::TieredProtector;
+    let d = tempdir().unwrap();
+    let p = TieredProtector::standard("user-request", d.path().join("kek"));
+    let head = Some(d.path().join("head.copy"));
+    let mut s = Store::open(d.path(), &p, head.clone()).unwrap();
+    let a = who("o", "s");
+    let secret = add(&mut s, approval(KindId::Secret, "A", &a, Some(mins(60))));
+    let bypass = add(
+        &mut s,
+        approval(KindId::LaneDialogBypass, &lane_subject("trust"), &a, None),
+    );
+    let plan = crate::request::restore_plan_subject(&"ab".repeat(32)).unwrap();
+    let restore = add(&mut s, approval(KindId::RestorePlan, &plan, &a, None));
+    assert_eq!(s.active_at(t0()).len(), 3);
+    assert_eq!(s.revoke_all_at(t0()).unwrap(), 3);
+    s.save(t0()).unwrap();
+    drop(s);
+    let s = Store::open(d.path(), &p, head).unwrap();
+    assert!(s.active_at(t0()).is_empty());
+    for id in [secret, bypass, restore] {
+        assert!(s.revoked.contains(&id), "{id} not revoked");
+    }
+    assert_eq!(
+        crate::tiered::key_tier(d.path()),
+        crate::tiered::KeyTier::Tier("keyfile".into())
+    );
+}
+
 // -- integrity: the audit chain anchors the files ----------------------------
 
 /// Review C2: a revocation cannot come back, even from a process that had
