@@ -2,7 +2,9 @@
 //! Windows Hello consent - design §2.2. Moved to the `user-request` crate
 //! (board item 121); re-exported here so with-secret is unchanged.
 
-pub use user_request::hello::{HelloConsent, Owner};
+pub use user_request::hello::HelloConsent;
+#[cfg(windows)]
+pub use user_request::hello::Owner;
 
 #[cfg(all(test, windows))]
 mod tests {

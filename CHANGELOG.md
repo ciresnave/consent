@@ -3,6 +3,16 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.14.0 (Breaking for non-Windows builds)
+
+Linux port, upstream asks U1, U2, U4, U7 (agentlife `docs/PORT-LINUX-PLAN.md` section 5). U3 and U5 wait on CireSnave; U6 is a standing NO.
+
+- **U2:** `locate::head_copy()` is `lane_state::platform::state_dir()` joined with `user-request-audit.head` (new `locate::head_copy_in`, `HEAD_COPY_NAME`): the Windows value is the same literal as before (`C:/Projects/.lane-state/...`); elsewhere it is an absolute path under the XDG state directory, outside the store directory. `lane-state` is now a dependency of `user-request` and is raised to 0.14.27 (`ProcEntry` gained `cmd`; with-secret's test fixture follows). `USER_REQUEST_HEAD` stays debug-only. with-secret reads lane states from the same `lane_state::platform::state_dir()` (it had its own `C:/Projects/.lane-state` literal; Windows value unchanged).
+
+- **U1:** `locate::dir()` is `$XDG_STATE_HOME/OverMind/user-request`, else `~/.local/state/OverMind/user-request` off Windows (a relative `XDG_STATE_HOME` is ignored, per the XDG specification); Windows is unchanged (`%LOCALAPPDATA%`). New `locate::Env` and `locate::try_dir(&Env)` let every platform's answer be tested on any host. `USER_REQUEST_DIR` stays debug-only. An empty `LOCALAPPDATA` (or `XDG_STATE_HOME`, `HOME`) is now treated as unset, so Windows gives the "LOCALAPPDATA is not set" error where it used to build a relative path (found in review).
+- **U7 (Breaking off Windows):** `hello::Owner` and `HelloConsent::owner` exist only on Windows (a window handle is a Windows concept). `HelloChannel::new(HelloConsent::default())` is the same call site on every OS (tested). with-secret re-exports `Owner` only on Windows.
+- **U4:** no new dependencies; `cargo tree --target x86_64-unknown-linux-gnu -e normal` for user-request lists no `windows*` crate, and the workspace checks clean for that target.
+
 ## 0.13.1
 
 - CI only: every GitHub Action is pinned to a release commit SHA (PM pin patch 2026-10-14); `dtolnay/rust-toolchain@stable` also gets an explicit `toolchain: stable`. No code change.

@@ -94,6 +94,7 @@ mod tests {
             name: name.into(),
             start_time_secs: start,
             exe: None,
+            cmd: Vec::new(),
         }
     }
 
