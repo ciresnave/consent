@@ -3,6 +3,10 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## Unreleased (docs only; version allocated by the PM at gate time)
+
+- `docs/LINUX-PORT-DESIGN.md`: the design for the Linux port of the key protector (U3), the approval providers (U5), the no-terminal-channel test (U6) and with-secret (U8). Three independent audit rounds; no code.
+
 ## 0.14.0 (Breaking for non-Windows builds)
 
 Linux port, upstream asks U1, U2, U4, U7 (agentlife `docs/PORT-LINUX-PLAN.md` section 5). U3 and U5 wait on CireSnave; U6 is a standing NO.
