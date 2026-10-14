@@ -83,11 +83,24 @@ pub fn dir() -> Result<PathBuf, String> {
     try_dir(&Env::current())
 }
 
+/// The file name of the audit head copy inside the lane state directory.
+pub const HEAD_COPY_NAME: &str = "user-request-audit.head";
+
+/// The head copy for a given lane-state directory: a sibling of the lane
+/// state files, never inside the store directory, so one cannot be
+/// rewritten with the other.
+pub fn head_copy_in(state_dir: &std::path::Path) -> PathBuf {
+    state_dir.join(HEAD_COPY_NAME)
+}
+
 /// The second place the audit chain's head is written, or
-/// `USER_REQUEST_HEAD` in a debug build.
+/// `USER_REQUEST_HEAD` in a debug build. The directory is
+/// `lane_state::platform::state_dir()`, the one definition every lane tool
+/// shares (`C:/Projects/.lane-state` on Windows, as it always was; an XDG
+/// path elsewhere).
 pub fn head_copy() -> PathBuf {
     env_override("USER_REQUEST_HEAD")
-        .unwrap_or_else(|| PathBuf::from("C:/Projects/.lane-state/user-request-audit.head"))
+        .unwrap_or_else(|| head_copy_in(&lane_state::platform::state_dir()))
 }
 
 #[cfg(test)]
@@ -144,6 +157,40 @@ mod tests {
             norm(try_dir(&e).unwrap()),
             "/home/x/.local/state/OverMind/user-request"
         );
+    }
+
+    fn lane_env(windows: bool, xdg: Option<&str>, home: Option<&str>) -> lane_state::platform::Env {
+        lane_state::platform::Env {
+            windows,
+            xdg_state_home: xdg.map(PathBuf::from),
+            home: home.map(PathBuf::from),
+        }
+    }
+
+    /// U2: Windows keeps the literal it always had.
+    #[test]
+    fn the_windows_head_copy_is_unchanged() {
+        let state = lane_state::platform::try_state_dir(&lane_env(true, None, None)).unwrap();
+        assert_eq!(
+            norm(head_copy_in(&state)),
+            "C:/Projects/.lane-state/user-request-audit.head"
+        );
+    }
+
+    /// U2: off Windows it is absolute and outside the store directory.
+    #[test]
+    fn the_linux_head_copy_is_absolute_and_outside_the_store_dir() {
+        for (xdg, home) in [(Some("/xdg"), Some("/home/x")), (None, Some("/home/x"))] {
+            let state = lane_state::platform::try_state_dir(&lane_env(false, xdg, home)).unwrap();
+            let head = norm(head_copy_in(&state));
+            assert!(head.starts_with('/'), "{head}");
+            assert!(
+                head.ends_with("/lane-state/user-request-audit.head"),
+                "{head}"
+            );
+            let store = norm(try_dir(&env(false, None, xdg, home)).unwrap());
+            assert!(!head.starts_with(&store), "{head} inside {store}");
+        }
     }
 
     #[test]

@@ -263,9 +263,9 @@ dependencies = [
 
 [[package]]
 name = "lane-state"
-version = "0.12.15"
+version = "0.14.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbd720c8455634b97a2848c22364f48364f143d143f4310d5cc90bea82a79225"
+checksum = "943ac184a9e8b14383255b9289c1e2f49cf076ac6ec14976c8cf798852691ac3"
 dependencies = [
  "chrono",
  "serde",
@@ -587,6 +587,7 @@ dependencies = [
  "chrono-tz",
  "getrandom",
  "hmac",
+ "lane-state",
  "serde",
  "serde_json",
  "sha2",
