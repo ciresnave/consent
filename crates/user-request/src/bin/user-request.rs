@@ -191,6 +191,26 @@ fn verify() -> Result<u8, String> {
     Ok(0)
 }
 
+/// One-time: make a credential for this store on the person's security key.
+/// The key blinks; the person touches it. A key with a PIN needs
+/// `USER_REQUEST_FIDO2_PIN` set for this one command.
+#[cfg(feature = "fido2")]
+fn enroll() -> Result<u8, String> {
+    let d = dir()?;
+    eprintln!("user-request: store {}", d.display());
+    let path = d.join("fido2-credential.json");
+    let pin = std::env::var("USER_REQUEST_FIDO2_PIN").ok();
+    eprintln!("user-request: touch the key when it blinks");
+    let c = user_request::fido2::enroll_hid(&path, pin.as_deref())?;
+    println!(
+        "enrolled credential {}... for {} ({})",
+        &c.id[..c.id.len().min(12)],
+        user_request::fido2::RPID,
+        path.display()
+    );
+    Ok(0)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -199,8 +219,12 @@ fn main() -> ExitCode {
         ["revoke", target] => revoke(target),
         ["repair"] => repair(),
         ["audit", "verify"] => verify(),
+        #[cfg(feature = "fido2")]
+        ["enroll"] => enroll(),
         _ => Err(
-            "usage: user-request list | revoke <id> | revoke --all | repair | audit verify".into(),
+            "usage: user-request list | revoke <id> | revoke --all | repair | audit verify \
+             | enroll (needs the fido2 feature)"
+                .into(),
         ),
     };
     match result {

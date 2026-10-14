@@ -16,6 +16,9 @@ lane-state.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
+# `fido2` feature: the security-key presence provider (S3). Linux needs
+# pkg-config and libudev-dev to build it (hidapi, hidraw backend).
+ctap-hid-fido2 = { version = "3.6.0", optional = true }
 
 # Windows-only: Windows Hello. Every use is cfg(windows); windows-future does
 # not compile on other targets, and CI also builds on Ubuntu.
@@ -23,7 +26,12 @@ sha2 = "0.11.0"
 windows = { version = "0.62.2", features = ["Foundation", "Security_Credentials_UI", "Win32_Foundation", "Win32_System_WinRT", "Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_Security_Cryptography", "Win32_System_Memory"] }
 windows-future = "0.3.2"
 
+[features]
+fido2 = ["dep:ctap-hid-fido2"]
+
 [dev-dependencies]
+# signs test assertions like a key would (fido2 feature tests)
+ring = "0.17.14"
 tempfile = "3.27.0"
 # real time zones, for the DST-gap tests (review of #1)
 chrono-tz = "0.10.4"
