@@ -115,6 +115,33 @@ pub fn prompt_text(req: &Request, grant: &Grant, now: DateTime<Utc>) -> String {
     )
 }
 
+/// What a provider that can bind its proof binds it to: the domain string,
+/// then the kind, the subject and the requester's session id (each as a 4-byte
+/// big-endian length and the bytes, so the tuple is unambiguous), then 16
+/// fresh random bytes, so the same request asked twice has two bindings.
+pub fn binding(req: &Request) -> [u8; 32] {
+    let mut fresh = [0u8; 16];
+    getrandom::fill(&mut fresh).expect("the OS random source works");
+    binding_with(req, &fresh)
+}
+
+/// `binding` with the random part supplied, so the encoding is testable.
+pub fn binding_with(req: &Request, fresh: &[u8; 16]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"user-request.v1.binding");
+    for field in [
+        req.kind.name().as_bytes(),
+        req.subject.as_bytes(),
+        req.requester.session_id.as_bytes(),
+    ] {
+        h.update((field.len() as u32).to_be_bytes());
+        h.update(field);
+    }
+    h.update(fresh);
+    h.finalize().into()
+}
+
 /// Windows Hello, through any `Consent` (the real one is `hello::HelloConsent`).
 pub struct HelloChannel<C: Consent> {
     pub consent: C,
@@ -154,7 +181,9 @@ impl<C: Consent> Channel for HelloChannel<C> {
         let Ok(expires_at) = grant.end_at(shown_at) else {
             return Outcome::Refused("an impossible duration".into());
         };
-        match self.consent.ask(&prompt_text(req, grant, shown_at), wait) {
+        let text = prompt_text(req, grant, shown_at);
+        let binding = binding(req);
+        match self.consent.ask_bound(&text, &binding, wait) {
             ConsentOutcome::Approved => {
                 let approved_at = (self.clock)();
                 // the person approved the END they were shown; if it passed
@@ -597,6 +626,53 @@ mod tests {
             text.contains(KindId::Secret.name()) && text.contains("subject"),
             "{text}"
         );
+    }
+
+    /// A consent that records the binding it is handed.
+    struct Binds(RefCell<Vec<[u8; 32]>>);
+    impl Consent for Binds {
+        fn ask(&self, _: &str, _: Duration) -> ConsentOutcome {
+            ConsentOutcome::Denied
+        }
+        fn ask_bound(&self, _: &str, b: &[u8; 32], _: Duration) -> ConsentOutcome {
+            self.0.borrow_mut().push(*b);
+            ConsentOutcome::Denied
+        }
+    }
+
+    /// Linux port S2: the channel hands the provider a binding, and asking
+    /// the same request twice gives two bindings (fresh random bytes).
+    #[test]
+    fn the_channel_binds_every_ask_and_never_reuses_a_binding() {
+        let ch = HelloChannel::new(Binds(RefCell::new(Vec::new())));
+        let r = bypass();
+        ch.present(&r, &Grant::Forever, WAIT);
+        ch.present(&r, &Grant::Forever, WAIT);
+        let seen = ch.consent.0.borrow();
+        assert_eq!(seen.len(), 2);
+        assert_ne!(seen[0], seen[1]);
+    }
+
+    /// Length-prefixed fields: moving a byte between subject and session id
+    /// is a different binding, and so is every field.
+    #[test]
+    fn the_binding_encoding_is_unambiguous() {
+        let fresh = [1u8; 16];
+        let mk = |subject: &str, session: &str, kind: KindId| {
+            let mut r = req(kind, "o", subject, "x", true);
+            r.requester.session_id = session.into();
+            binding_with(&r, &fresh)
+        };
+        let base = mk("ab", "c", KindId::Secret);
+        assert_eq!(base, mk("ab", "c", KindId::Secret));
+        assert_ne!(base, mk("a", "bc", KindId::Secret));
+        // the subject alone, with the session id held
+        assert_ne!(base, mk("ax", "c", KindId::Secret));
+        assert_ne!(base, mk("ab", "c", KindId::LaneDialogBypass));
+        assert_ne!(base, mk("ab", "d", KindId::Secret));
+        let mut other = req(KindId::Secret, "o", "ab", "x", true);
+        other.requester.session_id = "c".into();
+        assert_ne!(base, binding_with(&other, &[2u8; 16]));
     }
 
     #[test]

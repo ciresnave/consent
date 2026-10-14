@@ -3,6 +3,12 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.15.2 (S2 of docs/LINUX-PORT-DESIGN.md; additive, not Breaking)
+
+- **`Consent::ask_bound`** (default-bodied: every existing implementor is unchanged). `HelloChannel` now hands the provider a 32-byte binding: SHA-256 over `user-request.v1.binding`, then kind, subject and session id each length-prefixed, then 16 fresh random bytes (`channel::binding`, `binding_with`), so the same request asked twice has two bindings.
+- **`presence` module:** `PresenceProvider`, `PresenceConsent` (providers in order; the first available answers; a cancel or a timeout is never retried on the next provider; plain `ask` is `Unavailable`; nothing available is `Unavailable`, never `Approved`), and the challenge `SHA-256("user-request.v1" || binding || prompt)`. No hardware provider yet (FIDO2 is S3, fprintd S4).
+- **U6:** `tests/no_terminal_channel.rs`: a file that implements `Consent` or `Channel` may not mention stdin, `read_line`, `IsTerminal`, `rpassword`, `File::open` or `OpenOptions`; only listed files may mention stdin at all (today `with-secret/src/main.rs`). Enumerated from `git ls-files`, fails loudly without git, with positive controls. README: a terminal prompt is a deliberate omission.
+
 ## 0.15.1 (docs only)
 
 - `docs/LINUX-PORT-DESIGN.md`: section 9 records CireSnave's ruling on the FIDO2 text surface (board 208: "208: accept"; S3 unblocked) and section 10 adds second-device approval: what a second device buys and cannot, the signed-statement design, the limits that remain, five options, and what it needs from CireSnave (relay, phone app, elevated enrolment). Design only; two independent audit rounds, the last revision not re-audited.

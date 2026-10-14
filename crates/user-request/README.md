@@ -263,3 +263,11 @@ user-request audit verify    check the audit chain since its last reset, and its
 - The audit log is never rotated, and every append reads it whole.
 - Coming next, per the approved plan:
   - grants for lane-launch dialog bypasses.
+
+## Deliberate omissions
+
+- **No terminal prompt, behind no flag and no environment variable.** A process running as the same user
+  can type into a pty, so a terminal `y/n` would turn "a person approved" into "something on this machine
+  answered". Where there is no Windows Hello, approval is by physical presence (a security key's touch, a
+  fingerprint) or it is `Unavailable` and consent fails closed. `tests/no_terminal_channel.rs` enforces it:
+  no `Consent` or `Channel` implementation may read a terminal, and only listed files may touch stdin.

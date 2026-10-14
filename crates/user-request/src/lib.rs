@@ -14,6 +14,7 @@ pub mod consent;
 pub mod dpapi;
 pub mod hello;
 pub mod locate;
+pub mod presence;
 pub mod request;
 pub mod store;
 pub mod tiered;
