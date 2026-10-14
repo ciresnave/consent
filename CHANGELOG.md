@@ -3,6 +3,13 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.15.3 (S3 of docs/LINUX-PORT-DESIGN.md; additive, behind the opt-in `fido2` feature)
+
+- **`fido2` feature** (off by default; needs `pkg-config` and `libudev-dev` on Linux): `fido2::Fido2Provider`, a `PresenceProvider` over a security key (`ctap-hid-fido2` 3.6.0). `enroll` (also `user-request enroll`, PIN from `USER_REQUEST_FIDO2_PIN` if the key has one) makes a credential for the fixed relying-party id `user-request.local` and stores its id and public key. Each ask sends a `getAssertion` with the section 3 challenge; `Verified` only when the signature verifies against the enrolled key, the RP hash matches, the user-present flag is set and the signature counter did not go back (a counter that never moves is not checked). A cancel is `Cancelled`, the key's or our deadline `TimedOut`, no device or enrolment `Unavailable`; anything that fails verification is `Unavailable`, never `Approved`.
+- A key proves a person touched it, not that they read the text (design section 6; CireSnave accepted this, board 208).
+- Tests use a software authenticator that signs like a key (valid; wrong RP; no presence; another challenge; another key; counter back; cancel; timeout; no device). `live_fido2_cancel_is_denied` is `#[ignore]` and needs a key.
+- CI: a `fido2 feature` job on ubuntu and windows (clippy `-D warnings` and tests with the feature).
+
 ## 0.15.2 (S2 of docs/LINUX-PORT-DESIGN.md; additive, not Breaking)
 
 - **`Consent::ask_bound`** (default-bodied: every existing implementor is unchanged). `HelloChannel` now hands the provider a 32-byte binding: SHA-256 over `user-request.v1.binding`, then kind, subject and session id each length-prefixed, then 16 fresh random bytes (`channel::binding`, `binding_with`), so the same request asked twice has two bindings.

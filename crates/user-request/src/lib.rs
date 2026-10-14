@@ -12,6 +12,8 @@
 pub mod channel;
 pub mod consent;
 pub mod dpapi;
+#[cfg(feature = "fido2")]
+pub mod fido2;
 pub mod hello;
 pub mod locate;
 pub mod presence;
