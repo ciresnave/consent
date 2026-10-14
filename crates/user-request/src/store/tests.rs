@@ -396,6 +396,50 @@ fn a_key_that_does_not_decrypt_says_why_and_fails_closed() {
         .is_err());
 }
 
+/// A key whose tier is locked or missing is retryable, not damaged: opening
+/// fails with a message, the store is not marked untrusted, so `repair` is
+/// never offered and no grant is revoked (design section 2).
+#[test]
+fn an_unavailable_key_tier_is_a_retry_not_a_repair() {
+    struct Locked;
+    impl Protector for Locked {
+        fn protect(&self, p: &[u8]) -> Result<Vec<u8>, String> {
+            Ok(p.to_vec())
+        }
+        fn unprotect(&self, _: &[u8]) -> Result<Vec<u8>, String> {
+            Err("not used".into())
+        }
+        fn unprotect_typed(&self, _: &[u8]) -> Result<Vec<u8>, KeyError> {
+            Err(KeyError::Unavailable("the keyring is locked".into()))
+        }
+    }
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    let g = add(
+        &mut s,
+        approval(KindId::Secret, "DB", &who("o", "s"), Some(mins(60))),
+    );
+    s.save(t0()).unwrap();
+    drop(s);
+    let key_before = std::fs::read(d.path().join("store.key")).unwrap();
+    let e = Store::open(d.path(), &Locked, None)
+        .err()
+        .expect("must not open");
+    assert!(
+        e.contains("keyring is locked") && e.contains("try again"),
+        "{e}"
+    );
+    assert!(!e.contains("repair"), "{e}");
+    // nothing changed: the same key file, and the grant is still there
+    assert_eq!(
+        std::fs::read(d.path().join("store.key")).unwrap(),
+        key_before
+    );
+    let mut s = open(d.path());
+    assert_eq!(s.untrusted, None);
+    assert!(s.revoke_at(&g, t0()).unwrap(), "the grant is still there");
+}
+
 /// Review I2: a missing check file is rebuilt when the files prove the key.
 #[test]
 fn a_missing_key_check_is_rebuilt_when_the_files_verify() {

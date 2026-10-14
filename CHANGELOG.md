@@ -3,6 +3,13 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.15.0 (S1 of docs/LINUX-PORT-DESIGN.md; `locate::PROTECTOR` changes type)
+
+- **U3, the key tier layer.** New `tiered` module: `TieredProtector` over `Tier`s, blob `UR1\0<tag>\0<tier blob>`, and the `keyfile` tier (XChaCha20-Poly1305 under a 32-byte key in `<state>/OverMind/user-request-kek`, mode 0600, owner and mode re-checked on every open). Only the tier named in a blob may open it; a missing or locked tier is an error that names it and nothing is re-wrapped. Windows is unchanged: DPAPI, raw unprefixed blobs.
+- **The keyfile tier is weaker than DPAPI user scope** (its key sits in the same state tree, so a copy or backup of the tree carries both); `user-request list` and `repair` print `key protected by: <tag>` with that warning on stderr, on every path, trusted or not.
+- `store::Protector` gains two default methods, `unprotect_typed` and `tier` (additive); new `store::KeyError::{Unavailable, Corrupt}`. A key that is **unavailable** (locked or missing tier) now fails the open with a "try again; nothing was changed" error and is never marked untrusted, so `repair` is never offered and no grant is revoked for it. A key-encrypting key file that is gone while its directory is present is a lost key (`Corrupt`, `repair` is offered and revokes every grant, as for any lost key); a missing directory (an unmounted volume) is a retry.
+- `locate::PROTECTOR` is now a `Selected` (DPAPI on Windows, tiered elsewhere); every call site `&PROTECTOR` is unchanged. `Selected::for_dir(dir)` is for tests that open a store themselves. New dependency: `chacha20poly1305` 0.11.0 (unconditional, pure Rust, MIT OR Apache-2.0).
+
 ## 0.14.1 (docs only)
 
 - `docs/LINUX-PORT-DESIGN.md`: the design for the Linux port of the key protector (U3), the approval providers (U5), the no-terminal-channel test (U6) and with-secret (U8). Three independent audit rounds; no code.

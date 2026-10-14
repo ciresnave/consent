@@ -5,11 +5,84 @@
 
 use std::path::PathBuf;
 
-use crate::dpapi::Dpapi;
+use crate::store::Protector;
 
-/// The store key's DPAPI entropy.
+/// The store key's DPAPI entropy (Windows only; elsewhere the purpose label
+/// `user-request` is bound into the blob instead).
 pub const ENTROPY: &[u8] = b"overmind.user-request.v1";
-pub const PROTECTOR: Dpapi = Dpapi { entropy: ENTROPY };
+
+/// The platform's protector for the store key: DPAPI user scope on Windows,
+/// the tiered protector elsewhere (`tiered`). The same name and call sites as
+/// before; only its type changed.
+pub const PROTECTOR: Selected = Selected { kek: None };
+
+/// Where the non-Windows key-encrypting key lives: beside the store
+/// directory, in the same state tree; inside it when the directory is a
+/// debug-build override (tests own their directory, and a shared parent such
+/// as `/tmp` is not theirs to write to).
+pub fn kek_path() -> Result<PathBuf, String> {
+    let d = dir()?;
+    Ok(if env_override("USER_REQUEST_DIR").is_some() {
+        d.join("kek")
+    } else {
+        d.with_file_name("user-request-kek")
+    })
+}
+
+/// The platform's protector. `kek` is set only by `for_dir`.
+pub struct Selected {
+    // DPAPI needs no key file, so Windows never reads it
+    #[cfg_attr(windows, allow(dead_code))]
+    kek: Option<PathBuf>,
+}
+
+impl Selected {
+    /// The same protector a binary using `USER_REQUEST_DIR=<dir>` has, for a
+    /// test that opens a store in `dir` itself.
+    pub fn for_dir(dir: &std::path::Path) -> Self {
+        Self {
+            kek: Some(dir.join("kek")),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Selected {
+    fn inner(&self) -> Result<crate::dpapi::Dpapi, String> {
+        Ok(crate::dpapi::Dpapi { entropy: ENTROPY })
+    }
+}
+
+#[cfg(not(windows))]
+impl Selected {
+    fn inner(&self) -> Result<crate::tiered::TieredProtector, String> {
+        let kek = match &self.kek {
+            Some(k) => k.clone(),
+            None => kek_path()?,
+        };
+        Ok(crate::tiered::TieredProtector::standard(
+            "user-request",
+            kek,
+        ))
+    }
+}
+
+impl Protector for Selected {
+    fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, String> {
+        self.inner()?.protect(plain)
+    }
+    fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, String> {
+        self.inner()?.unprotect(blob)
+    }
+    fn unprotect_typed(&self, blob: &[u8]) -> Result<Vec<u8>, crate::store::KeyError> {
+        self.inner()
+            .map_err(crate::store::KeyError::Unavailable)?
+            .unprotect_typed(blob)
+    }
+    fn tier(&self, blob: &[u8]) -> Option<String> {
+        self.inner().ok()?.tier(blob)
+    }
+}
 
 /// ⚠️ The overrides exist for tests and only in debug builds (review M4): a
 /// leaked variable must never point the panic button, or a secret's

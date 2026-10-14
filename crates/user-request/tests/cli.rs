@@ -75,8 +75,10 @@ fn seed(dir: &Path) -> (String, String) {
 fn list_shows_forever_grants_first_and_loudly() {
     let d = tempfile::tempdir().unwrap();
     let (forever, timed) = seed(d.path());
-    let (code, out, _) = run(d.path(), &["list"]);
+    let (code, out, err) = run(d.path(), &["list"]);
     assert_eq!(code, 0);
+    // the key's protection is always shown, on stderr
+    assert!(err.contains("key protected by: "), "{err}");
     let (f, t) = (out.find(&forever).unwrap(), out.find(&timed).unwrap());
     assert!(out.starts_with("*** FOREVER GRANTS"), "{out}");
     assert!(f < t, "{out}");
