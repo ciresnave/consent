@@ -8,5 +8,6 @@ pub mod dumpcheck;
 pub mod hello;
 pub mod identity;
 pub mod mask;
+pub mod platform;
 pub mod run;
 pub mod vault;
