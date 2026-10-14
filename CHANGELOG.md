@@ -3,7 +3,7 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
-## Unreleased (docs only; version allocated by the PM at gate time)
+## 0.14.1 (docs only)
 
 - `docs/LINUX-PORT-DESIGN.md`: the design for the Linux port of the key protector (U3), the approval providers (U5), the no-terminal-channel test (U6) and with-secret (U8). Three independent audit rounds; no code.
 
