@@ -29,6 +29,14 @@ fn open(read_only: bool) -> Result<Option<Store>, String> {
 }
 
 fn list() -> Result<u8, String> {
+    // how the key is protected is shown on every path, trusted or not, and
+    // before anything that might fail to open
+    if let Ok(d) = dir() {
+        eprintln!(
+            "user-request: {}",
+            user_request::tiered::key_tier(&d).describe()
+        );
+    }
     let Some(s) = open(true)? else {
         println!("no store yet: nothing has been granted");
         return Ok(0);
@@ -131,6 +139,13 @@ fn repair() -> Result<u8, String> {
         return Ok(0);
     };
     let r = s.repair(&PROTECTOR)?;
+    // a repair re-keys, so say which tier the new key is under
+    if let Ok(d) = dir() {
+        eprintln!(
+            "user-request: {}",
+            user_request::tiered::key_tier(&d).describe()
+        );
+    }
     let resume = (now + GATE_CLOSED_AFTER_REPAIR)
         .with_timezone(&Local)
         .format("%H:%M %Z");

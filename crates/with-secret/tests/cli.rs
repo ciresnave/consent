@@ -233,7 +233,7 @@ fn revoke_ends_approvals_and_checks_its_arguments() {
 #[test]
 fn revoke_ends_secrets_grants_in_the_store_and_nothing_else() {
     use user_request::channel::Outcome;
-    use user_request::locate::PROTECTOR;
+    use user_request::locate::Selected;
     use user_request::request::{Approval, KindId, Requester};
     use user_request::store::{AuditOnly, Store};
 
@@ -249,7 +249,7 @@ fn revoke_ends_secrets_grants_in_the_store_and_nothing_else() {
         managed: true,
     };
     let grant = |kind: KindId, subject: &str, who: &Requester| {
-        let mut s = Store::open(&dir, &PROTECTOR, Some(head.clone())).unwrap();
+        let mut s = Store::open(&dir, &Selected::for_dir(&dir), Some(head.clone())).unwrap();
         let r = s.may_ask(who, kind, subject, &AuditOnly).unwrap();
         let ap = Approval {
             kind,
@@ -276,7 +276,7 @@ fn revoke_ends_secrets_grants_in_the_store_and_nothing_else() {
             .unwrap()
     };
     let active = || {
-        let s = Store::open(&dir, &PROTECTOR, Some(head.clone())).unwrap();
+        let s = Store::open(&dir, &Selected::for_dir(&dir), Some(head.clone())).unwrap();
         assert_eq!(s.untrusted(), None);
         s.active()
             .into_iter()
@@ -302,7 +302,7 @@ fn revoke_ends_secrets_grants_in_the_store_and_nothing_else() {
         active(),
         vec![(KindId::LaneDialogBypass, FUEL_TRUST.into())]
     );
-    let s = Store::open(&dir, &PROTECTOR, Some(head.clone())).unwrap();
+    let s = Store::open(&dir, &Selected::for_dir(&dir), Some(head.clone())).unwrap();
     assert_eq!(s.active()[0].id, bypass);
 }
 

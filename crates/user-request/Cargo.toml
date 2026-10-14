@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Ask a person to approve something, through an interchangeable channel (Windows Hello first), with an approver-chosen grant. See crates/user-request/README.md."
 
 [dependencies]
+chacha20poly1305 = "0.11.0"
 chrono = { version = "0.4.45", features = ["serde"] }
 getrandom = "0.4.3"
 hmac = "0.13.0"

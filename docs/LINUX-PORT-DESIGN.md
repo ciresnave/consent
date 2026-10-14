@@ -63,9 +63,9 @@ ambiguous). Existing implementors (Hello, test fakes, with-secret's
   protector), and returns
   `Tier(tag)`, `LegacyDpapi` (no `UR1\0` magic, on Windows; printed as `dpapi`, hard-coded because `Dpapi::tier` is the default `None`),
   `Foreign` (no magic, elsewhere: an error line) or
-  `Missing` (no key yet: `list` prints `key: none yet`). `user-request list` calls it before `inspect` and
-  prints it on **every** path, including the untrusted-key early return, calling `dir()` itself so it works
-  before any store exists: `key protected by: <tag>`, and for `keyfile`
+  `Missing` (no key yet: `list` prints `key: none yet`). `user-request list` calls it before opening
+  anything and prints it on **every** path, including the untrusted-key early return, on **stderr** with the
+  store's path (so what scripts read from stdout is unchanged; `repair` prints it too): `key protected by: <tag>`, and for `keyfile`
   `weakest tier: the key sits beside the store, readable by any process running as this user and carried by
   any copy or backup of that directory; it only keeps other users out`.
   There is no flag to hide it. with-secret's vault trait gets the same `tier` method and `with-secret list`
@@ -73,18 +73,21 @@ ambiguous). Existing implementors (Hello, test fakes, with-secret's
 - **Typed unavailability.** `Protector::unprotect` keeps `Result<Vec<u8>, String>` for compatibility; a
   new default method `unprotect_typed(&self, blob) -> Result<Vec<u8>, KeyError>` with
   `KeyError::{Unavailable(String), Corrupt(String)}` is what `open_in` calls (the default maps the string
-  error to `Corrupt`, so existing implementors behave as before). `open_in` maps `Unavailable` to a new
-  `Untrusted::KeyUnavailable`, which `list` reports as retryable and which does **not** offer `repair`.
-  `repair(&mut self, &dyn Protector, tier: Option<&str>)` takes the tier explicitly.
+  error to `Corrupt`, so existing implementors behave as before). `open_in` returns an error for `Unavailable`
+  ("... not available right now (<why>); try again. Nothing was changed.") before it builds any `Untrusted`
+  state, so `repair` is never offered and the key file is untouched (as built in S1; a separate
+  `Untrusted::KeyUnavailable` was not needed).
 - **`repair` never silently re-tiers.** `repair` quarantines `store.key` and writes a new one through the
   selector. A transient condition (Secret Service locked, TPM busy) must not destroy every grant and then
   re-key under another tier. Only `Corrupt` reaches `repair`. The tag survives in the blob prefix when the
-  AEAD body is corrupt; when even the prefix is unreadable the previous tier is unknown and `repair` requires
-  `--tier <tag>` explicitly. It prints the tier it chose.
-- **The selector.** `locate::PROTECTOR` is today `pub const PROTECTOR: Dpapi`. It becomes
-  `pub fn protector() -> Selected` (an enum over `Dpapi` and `TieredProtector`): a **Breaking** change to
-  that public name, in the same release that lands S1. Callers are `bin/user-request.rs` (three sites), with-secret's `main.rs` and its `tests/cli.rs`; `ENTROPY`
-  stays public.
+  AEAD body is corrupt; `repair` prints the tier the new key is under (as built in S1). Choosing a tier with `--tier <tag>` is
+  not built: until a second tier exists (S5) there is only one to choose. A `keyfile` KEK that is gone while
+  its directory exists is a lost key (`Corrupt`, `repair` offered, revokes every grant); a missing directory
+  (an unmounted volume) is a retry.
+- **The selector.** `locate::PROTECTOR` was `pub const PROTECTOR: Dpapi`. It stays a
+  `const`, now of type `Selected` (DPAPI on Windows, `TieredProtector` elsewhere, resolved per call), so
+  every `&PROTECTOR` call site compiles unchanged; only the type name changed (0.15.0, minor bump).
+  `Selected::for_dir(dir)` is for tests that open a store themselves. `ENTROPY` stays public.
 - **Tiers.**
   - `keyfile`: a 32-byte KEK in `<state>/OverMind/user-request-kek` (a distinct file for with-secret), mode
     `0600`, created with `O_EXCL`; the blob is XChaCha20-Poly1305 over the key, tag and purpose as associated
@@ -93,9 +96,9 @@ ambiguous). Existing implementors (Hello, test fakes, with-secret's
   - `secret-service`: the KEK is an item in the user's Secret Service collection. Unavailable when there is no
     session bus or the collection is locked (we never show an unlock prompt: a second consent surface).
   - `tpm2`: the KEK is sealed under the owner hierarchy; `/dev/tpmrm0` required. No PIN in this slice.
-- **Features and dependencies.** The AEAD crate is an unconditional dependency under
-  `[target.'cfg(not(windows))'.dependencies]` (Cargo has no per-target default features, and `keyfile` must
-  work on a headless box). `secret-service`, `tpm2`, `fido2`, `fprintd` are opt-in features (`fido2` also brings a CBOR/COSE parser and
+- **Features and dependencies.** The AEAD crate (`chacha20poly1305` 0.11) is an unconditional
+  dependency, not target-gated: Cargo has no per-target default features, `keyfile` must work on a headless
+  box, and an unconditional dependency lets the tier's tests run on a Windows host too (as built in S1). `secret-service`, `tpm2`, `fido2`, `fprintd` are opt-in features (`fido2` also brings a CBOR/COSE parser and
 an ECDSA crate for the in-process verification). CI gains a `--all-features` clippy and test step on
 `ubuntu-latest`, or the opt-in code is never compiled; `deny.toml` runs with `all-features = true`, so the
 D-Bus, TPM and HID crates' licences and advisories are checked when they land (each slice says what it adds). U4's check stays

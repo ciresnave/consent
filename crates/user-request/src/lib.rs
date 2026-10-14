@@ -16,6 +16,7 @@ pub mod hello;
 pub mod locate;
 pub mod request;
 pub mod store;
+pub mod tiered;
 
 pub use channel::{prompt_text, Channel, HelloChannel, Outcome, PushChannel, SmsChannel};
 pub use consent::{Consent, ConsentOutcome};

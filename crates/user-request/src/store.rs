@@ -53,10 +53,32 @@ use sha2::{Digest, Sha256};
 use crate::channel::Outcome;
 use crate::request::{Approval, Grant, KindId, MaxGrant, Request, Requester, Scope};
 
-/// Encrypts the store's key at rest (`dpapi::Dpapi` in production).
+/// Why a key could not be opened. `Unavailable` is a condition that may pass
+/// (a locked keyring, a busy TPM, a tier that is not installed): nothing is
+/// wrong with the key and nothing may be revoked or re-keyed because of it.
+/// `Corrupt` is a key that this protector reached and could not read.
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyError {
+    Unavailable(String),
+    Corrupt(String),
+}
+
+/// Encrypts the store's key at rest (`dpapi::Dpapi` on Windows,
+/// `tiered::TieredProtector` elsewhere).
 pub trait Protector {
     fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, String>;
     fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, String>;
+    /// `unprotect`, saying whether a failure is transient. The default calls
+    /// `unprotect` and calls every failure `Corrupt`, which is what every
+    /// protector did before this existed.
+    fn unprotect_typed(&self, blob: &[u8]) -> Result<Vec<u8>, KeyError> {
+        self.unprotect(blob).map_err(KeyError::Corrupt)
+    }
+    /// The tier that protected `blob`, for protectors that have tiers.
+    fn tier(&self, blob: &[u8]) -> Option<String> {
+        let _ = blob;
+        None
+    }
 }
 
 /// Tells a person something needs their attention. ⚠️ DELIVERY is not built:
@@ -327,9 +349,16 @@ impl Store {
         let check_path = dir.join("store.key.check");
         let mut untrusted = None;
         let key = match read_retry(&key_path) {
-            Ok(blob) => match protector.unprotect(&blob) {
+            Ok(blob) => match protector.unprotect_typed(&blob) {
                 Ok(k) => k,
-                Err(e) => {
+                // a condition that may pass is not a damaged key: report it
+                // and let the person retry, never offer `repair` for it
+                Err(KeyError::Unavailable(why)) => {
+                    return Err(format!(
+                        "the store key is protected by something that is not available right now ({why}); try again. Nothing was changed."
+                    ))
+                }
+                Err(KeyError::Corrupt(e)) => {
                     untrusted = Some(Untrusted::Key(format!("the key did not decrypt: {e}")));
                     Vec::new()
                 }
