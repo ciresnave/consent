@@ -63,9 +63,9 @@ ambiguous). Existing implementors (Hello, test fakes, with-secret's
   protector), and returns
   `Tier(tag)`, `LegacyDpapi` (no `UR1\0` magic, on Windows; printed as `dpapi`, hard-coded because `Dpapi::tier` is the default `None`),
   `Foreign` (no magic, elsewhere: an error line) or
-  `Missing` (no key yet: `list` prints `key: none yet`). `user-request list` calls it before opening
-  anything and prints it on **every** path, including the untrusted-key early return, on **stderr** with the
-  store's path (so what scripts read from stdout is unchanged; `repair` prints it too): `key protected by: <tag>`, and for `keyfile`
+  `Missing` (no key yet: `list` prints `key: none yet`). `user-request list` calls it before `inspect` and
+  prints it on **every** path, including the untrusted-key early return, calling `dir()` itself so it works
+  before any store exists: `key protected by: <tag>`, and for `keyfile`
   `weakest tier: the key sits beside the store, readable by any process running as this user and carried by
   any copy or backup of that directory; it only keeps other users out`.
   There is no flag to hide it. with-secret's vault trait gets the same `tier` method and `with-secret list`
@@ -73,21 +73,18 @@ ambiguous). Existing implementors (Hello, test fakes, with-secret's
 - **Typed unavailability.** `Protector::unprotect` keeps `Result<Vec<u8>, String>` for compatibility; a
   new default method `unprotect_typed(&self, blob) -> Result<Vec<u8>, KeyError>` with
   `KeyError::{Unavailable(String), Corrupt(String)}` is what `open_in` calls (the default maps the string
-  error to `Corrupt`, so existing implementors behave as before). `open_in` returns an error for `Unavailable`
-  ("... not available right now (<why>); try again. Nothing was changed.") before it builds any `Untrusted`
-  state, so `repair` is never offered and the key file is untouched (as built in S1; a separate
-  `Untrusted::KeyUnavailable` was not needed).
+  error to `Corrupt`, so existing implementors behave as before). `open_in` maps `Unavailable` to a new
+  `Untrusted::KeyUnavailable`, which `list` reports as retryable and which does **not** offer `repair`.
+  `repair(&mut self, &dyn Protector, tier: Option<&str>)` takes the tier explicitly.
 - **`repair` never silently re-tiers.** `repair` quarantines `store.key` and writes a new one through the
   selector. A transient condition (Secret Service locked, TPM busy) must not destroy every grant and then
   re-key under another tier. Only `Corrupt` reaches `repair`. The tag survives in the blob prefix when the
-  AEAD body is corrupt; `repair` prints the tier the new key is under (as built in S1). Choosing a tier with `--tier <tag>` is
-  not built: until a second tier exists (S5) there is only one to choose. A `keyfile` KEK that is gone while
-  its directory exists is a lost key (`Corrupt`, `repair` offered, revokes every grant); a missing directory
-  (an unmounted volume) is a retry.
-- **The selector.** `locate::PROTECTOR` was `pub const PROTECTOR: Dpapi`. It stays a
-  `const`, now of type `Selected` (DPAPI on Windows, `TieredProtector` elsewhere, resolved per call), so
-  every `&PROTECTOR` call site compiles unchanged; only the type name changed (0.15.0, minor bump).
-  `Selected::for_dir(dir)` is for tests that open a store themselves. `ENTROPY` stays public.
+  AEAD body is corrupt; when even the prefix is unreadable the previous tier is unknown and `repair` requires
+  `--tier <tag>` explicitly. It prints the tier it chose.
+- **The selector.** `locate::PROTECTOR` is today `pub const PROTECTOR: Dpapi`. It becomes
+  `pub fn protector() -> Selected` (an enum over `Dpapi` and `TieredProtector`): a **Breaking** change to
+  that public name, in the same release that lands S1. Callers are `bin/user-request.rs` (three sites), with-secret's `main.rs` and its `tests/cli.rs`; `ENTROPY`
+  stays public.
 - **Tiers.**
   - `keyfile`: a 32-byte KEK in `<state>/OverMind/user-request-kek` (a distinct file for with-secret), mode
     `0600`, created with `O_EXCL`; the blob is XChaCha20-Poly1305 over the key, tag and purpose as associated
@@ -96,9 +93,9 @@ ambiguous). Existing implementors (Hello, test fakes, with-secret's
   - `secret-service`: the KEK is an item in the user's Secret Service collection. Unavailable when there is no
     session bus or the collection is locked (we never show an unlock prompt: a second consent surface).
   - `tpm2`: the KEK is sealed under the owner hierarchy; `/dev/tpmrm0` required. No PIN in this slice.
-- **Features and dependencies.** The AEAD crate (`chacha20poly1305` 0.11) is an unconditional
-  dependency, not target-gated: Cargo has no per-target default features, `keyfile` must work on a headless
-  box, and an unconditional dependency lets the tier's tests run on a Windows host too (as built in S1). `secret-service`, `tpm2`, `fido2`, `fprintd` are opt-in features (`fido2` also brings a CBOR/COSE parser and
+- **Features and dependencies.** The AEAD crate is an unconditional dependency under
+  `[target.'cfg(not(windows))'.dependencies]` (Cargo has no per-target default features, and `keyfile` must
+  work on a headless box). `secret-service`, `tpm2`, `fido2`, `fprintd` are opt-in features (`fido2` also brings a CBOR/COSE parser and
 an ECDSA crate for the in-process verification). CI gains a `--all-features` clippy and test step on
 `ubuntu-latest`, or the opt-in code is never compiled; `deny.toml` runs with `all-features = true`, so the
 D-Bus, TPM and HID crates' licences and advisories are checked when they land (each slice says what it adds). U4's check stays
@@ -195,9 +192,9 @@ with-secret shares the **approvals** store, so approvals and `revoke --all` cons
 - **A security key proves a person touched it, not that they read the text.** Windows Hello shows the prompt
   in a system dialog. A key has no screen, so the text is shown on a surface an agent running as the same
   user may be able to influence; the signature binds the request, the text hash and a fresh nonce to the
-  touch, which defeats replay, not misdirection. That is weaker than Hello and needs CireSnave's explicit
-  acceptance (section 9). A key with a display, or a TPM PIN typed on a path the agent cannot read, would
-  close it; neither is in this plan.
+  touch, which defeats replay, not misdirection. That is weaker than Hello; CireSnave accepted it (board
+  208, section 9). A key with a display, a TPM PIN typed on a path the agent cannot read, or a second device
+  (section 10) would close it; none is in S1-S6.
 - No TPM PIN (`authValue`).
 - The comment in `with-secret/src/vault.rs` that DPAPI protects "against copies of the disk" is made
   tier-neutral in S1/S6: the `keyfile` tier sits behind the same trait and does not.
@@ -211,7 +208,7 @@ The Linux CI leg already exists (`ci.yml`: `ubuntu-latest` and `windows-latest` 
 |---|---|---|
 | S1 | `Tier`, `TieredProtector`, blob format, `keyfile` tier, `Protector::tier`, free function `locate::key_tier`, a typed unavailable-vs-corrupt split in `unprotect`/`open_in`/`repair`, shown in `list`, `locate::protector()` (Breaking), refusal tests | nothing external |
 | S2 | `Consent::ask_bound` (additive), `PresenceConsent`, `PresenceProvider`, fake authenticator, U6 test + README | nothing external |
-| S3 | `Fido2` provider, `enroll`, store format bump. **Blocked on the section 9 answer** | a FIDO2 key for the live test |
+| S3 | `Fido2` provider, `enroll`, store format bump. Unblocked by the section 9 answer (board 208) | a FIDO2 key for the live test |
 | S4 | `Fprintd` provider after measurement 1 | a reader + enrolled finger |
 | S5 | `secret-service` and `tpm2` tiers | desktop session / TPM for live tests |
 | S6 | with-secret on Linux: vault tiers, vault dir, Consent selector in `main.rs`, `read_hidden`, identity check, README, `revoke --all` test (U8) | S1, S2 |
@@ -225,9 +222,171 @@ The Linux CI leg already exists (`ci.yml`: `ubuntu-latest` and `windows-latest` 
 3. Does the Claude process on Linux appear as `claude` (or `node`) in the process table, and how far does
    `start_time_secs` drift between reads (S6)?
 
-## 9. Open question for CireSnave (through the PM)
+## 9. Ruled: the FIDO2 text surface (board 208)
 
-Is "a touch proves presence and the signature binds the request, but the text is shown on a surface an agent
-could influence" acceptable for the FIDO2 provider? Recommendation: yes, stated plainly in the README, because
-it is still the strongest same-user-proof property available without special hardware, and Hello's trusted
-dialog is not reproducible without a trusted display. S3 does not start before the answer.
+CireSnave ruled, verbatim: *"208: accept"* (relayed by the PM 2026-10-14), accepting that for the FIDO2
+provider "a touch proves presence and the signature binds the request, but the text is shown on a surface
+an agent could influence". The limitation is stated plainly in the README and the tier in use is shown at
+approval time; the `keyfile` key tier is named the weakest. S3 is unblocked. His follow-up question, a
+second device, is section 10 (design only; building it waits on his decision about a relay service).
+
+## 10. Second-device approval (board 208, CireSnave's question)
+
+*The question:* should approval happen on a **different device** (a phone), so the agent cannot influence
+the text the person sees? Design only; nothing here is built. An independent audit of the first draft of
+this section found its central argument unsound (a consumer cannot recompute the prompt text, and the
+trust anchor sat in a same-user-writable store); this is the corrected version.
+
+### What a second device buys, and what it cannot
+
+The threat is a process running as the same user as the person, which can read and write every file the
+person's tools write, including the store and its HMAC key (the crate's own header says it "stops
+accidents"). Against that threat:
+
+- A second device **can** give a display and an approve action that nothing on the host can overdraw,
+  synthesise or answer, and a private key that never leaves the phone's hardware-backed store, gated by its
+  biometric.
+- A second device **cannot**, by itself, make an approval *record* on the host trustworthy: a record the
+  agent can write is not evidence. Evidence is a **signature** the consumer verifies against a key the
+  agent cannot replace (below).
+- It **cannot** fix what the requester says. `Secret` subjects and every `reason` are requester-supplied
+  and stay labelled "Reason given:", apart from the vouched lines.
+- It **does not bind the command**: the prompt, by design, excludes the command and summary (they go to the
+  access log), so the person approves a secret name and a duration, not a command line.
+
+### The signed statement (replaces "the consumer recomputes the text")
+
+A consumer cannot recompute `prompt_text`: it does not hold the requester's `reason`, the `shown_at` the
+channel read (the displayed end depends on it), the grant's form (`For` or `Until`), or, for
+`AnyRequester` kinds, the asker. So the second-device provider signs a **structured statement**, not a
+rendered string:
+
+`statement = {kind, subject, requester{role, session_id, claude_pid, claude_start_secs}, grant_form,
+asked_at, expires_at, approved_at, binding, nonce (issued by the phone), reason_sha256}`
+
+- **Encoding** (not left open: ambiguity here is a forgery vector): each field in the order above as a
+  4-byte big-endian length then its UTF-8 bytes (times as RFC 3339 UTC to the second; an absent
+  `expires_at` as the zero-length field), under the one domain string `user-request.v1.statement`
+  (the statement's own version is that string; there is no separate `v` field). The three domain strings in
+  this document (`user-request.v1` for the section 3 challenge, `.binding`, `.statement`) are each hashed
+  as a length-prefixed first field in the new code, so none is a prefix of another's input.
+- **Who fixes the end:** the host, at ask time (`asked_at`, `expires_at` are computed from the grant and
+  shown to the phone, which signs them). The phone adds only `approved_at` from its own clock; a
+  consumer rejects an `approved_at` before `asked_at` or after its own now plus a small skew. A delayed
+  relayed approval is therefore bounded by the end the person was shown.
+
+The phone shows the same human text as today (`prompt_text`) and signs `SHA-256("user-request.v1.statement"
+|| canonical(statement))`. The signature and the statement are stored with the approval
+(`Approval.proof`). A consumer that is about to act checks, on its own:
+
+1. the signature verifies against the **pinned phone key** (next section);
+2. `kind` and `subject` equal the action it is about to perform (for `with-secret`, the secret name; for
+   `RestorePlan`, the plan hash it holds);
+3. for `ThisRequester` kinds (`Secret`), `requester` equals the consumer's own identity from the process
+   table; for `AnyRequester` kinds (`LaneDialogBypass`, `RestorePlan`) the requester is **advisory**: its
+   `role` is requester-supplied text, shown on the phone as a claim;
+4. the statement's grant is within the kind's maximum (`Grant::within`, re-run on the signed values, not
+   trusted from the record), `expires_at` has not passed, and `approved_at` is plausible (above);
+5. `nonce` is not in the spent-nonce set, and the nonce was issued by the phone for this ask: only the
+   provider that talked to the phone can know that at ask time, so the provider rejects a response whose
+   nonce it did not hand out, and the consumer's check is uniqueness only.
+
+It does not claim that the displayed text equals a recomputation, and it does not check `reason`
+(requester-supplied, shown and labelled, hashed only so the person's screen and the record agree).
+
+**Why the nonce is the phone's:** the 16 random bytes in the section 1 `binding` are chosen by the host, so
+a same-user agent could present an old (binding, signature) pair again. A nonce the phone issues per
+ask and signs, plus the consumer's spent set, closes that. (`binding` still ties the ask to the request.)
+
+### Limits that remain (read these before deciding)
+
+An independent re-audit found these, and the design does not hide them:
+
+1. **Replay of a stored statement is not prevented against an agent that rewrites the store.** The spent
+   set and a `OneUse` spend live in the store, which a same-user agent can rewrite and re-seal with the key
+   it can read. It can then re-present an old valid (statement, signature) for the *same kind and subject*.
+   That can only reuse something the person approved earlier, but for `Forever` and `OneUse` grants there
+   is no time bound. **The mode that closes this is a consumer-issued challenge:** at use time the
+   consumer generates a fresh nonce, the phone signs a statement containing it, and nothing stored is
+   reusable. It needs the phone online at each use, so it suits `OneUse` and `Forever` kinds
+   (`RestorePlan`, `LaneDialogBypass`), and stored statements are accepted only for finite grants.
+2. **The verifier must not be steerable.** The key path is a compile-time constant with no environment
+   variable, flag or XDG override (the repo's own debug overrides, `WITH_SECRET_DIR` and
+   `USER_REQUEST_DIR`, are deliberately **not** extended to it, and a test greps for any new such knob).
+3. **A root-owned key checked by a user-writable binary protects nothing against a same-user agent that
+   replaces the binary.** The check is only as strong as the install location of the consumer: a
+   root-owned install path (`/usr/local/lib/user-request/`, `%ProgramFiles%`) is part of the elevated
+   enrolment, or the honest statement is that the second device then raises the bar from "the agent can
+   inject an approval or overdraw the prompt" to "the agent must replace the consumer binary", and no
+   further. The same bound applies to Windows Hello today.
+4. **The signed approval gates consumers that honour it, not the data.** The vault key is a same-user
+   KEK file or a keyring item a same-user process can ask for; an agent that reads the secret directly
+   never needs an approval. This design protects the *approval*, not the secret at rest (section 6).
+5. **Which kinds require the second device is itself a policy that must be root-owned**: it is stored in
+   the same elevated file as the pinned key, not in the store or any user config, or the agent switches
+   "required" off.
+
+### The trust anchor must not be same-user-writable
+
+The phone's public key cannot be "pinned in the store": the agent can rewrite the store (or unseal its key
+through a same-user Secret Service/TPM call) and pin its own key. The pinned key therefore lives where the
+agent cannot write:
+
+- **Linux:** `/etc/user-request/phone.pub`, root-owned, mode 0644, written by `sudo user-request
+  enroll-phone` (the person, at a terminal, with the phone's QR/fingerprint shown on the phone).
+- **Windows:** a file under `%ProgramData%` whose ACL grants write to Administrators only, written by an
+  elevated `enroll-phone`.
+- A consumer refuses proof-less approvals for the kinds where the second device is **required**
+  (configurable per kind; today's Hello approvals stay accepted for the others). Without that, a forged
+  proof-less record still passes, and the second device would add nothing.
+
+If elevation is not available on a box (a shared CI runner, a container), second-device approval is simply
+not offered there; that is `Unavailable`, not a weaker mode.
+
+### Options
+
+| # | Option | Arbitrary text on the second device | Needs | Verdict |
+|---|---|---|---|---|
+| A | **Own phone app, push through a relay** (self-hosted ntfy/WebSocket, or FCM): the app shows the text and Approve/Deny and signs the statement with a hardware-backed, biometric-gated key | yes (our app renders it) | a phone app (new project), a relay, an elevated enrolment | the only option that gives the signed statement above |
+| B | **FIDO2 key on the host + text on the phone**: the person reads the phone and touches the key | yes, but the key proves only presence | relay for the text, plus section 3 | weaker than A: presence and text arrive on two surfaces, and the key signs no statement |
+| C | **WebAuthn hybrid** (phone as the authenticator, formerly caBLE) | **no**: the transaction-text extension `txAuthSimple` was removed from WebAuthn Level 2 in 2020 as unimplemented (w3c/webauthn issue 1386; it survives in Level 1 and the IANA registry), and its revised proposal (PR 2020) was closed unmerged in 2025 over the risk of untrusted text in trusted UI. Secure Payment Confirmation shows payee name and origin (optional), total, and an instrument name and icon, in a browser, for payments | a browser on the host, no relay | not viable for arbitrary text; at most presence, like B |
+| D | **Third-party chat bot** (Telegram/Signal/Slack inline buttons) | yes | an account at a third party, a bot token on the host | the callback is authenticated by the third party, not by a key we hold; no signed statement; privacy cost |
+| E | **Direct, no relay** (phone app reached over LAN, USB or BLE) | yes | the app, same network or cable | no relay service; only when the phone is near. A Termux/Android provider running **on the same machine** gains no trust boundary (it shares the user); only a separate device does |
+
+(Option C: the txAuthSimple history and PR 2020 were checked against the w3c/webauthn issue tracker and the
+W3C SPC specification on 2026-10-14. That the phone's OS, not the relying party, renders the hybrid
+authenticator's UI is the authenticator's design and was **not** verified on a device.)
+
+### Threats this adds
+
+- **A stolen or compromised phone** approves anything it is shown: the biometric gate and revocation (the
+  person removes `/etc/user-request/phone.pub`) are the only controls. A lost phone must be revocable from
+  the host without the phone.
+- **A relay that drops or delays** messages is denial of service and fails closed (`Unavailable` or
+  `TimedOut`); a delayed approval is bounded by the statement's own `expires_at` and the phone's clock.
+- The relay sees metadata (that something was asked, when); the payload is end-to-end encrypted to the
+  phone's key.
+
+### Shape in this repo (not additive everywhere; stated plainly)
+
+- A second-device provider is one more `PresenceProvider` (section 3) that sends the request to the phone
+  and returns the verified statement.
+- `Consent::ask_bound` returns a unit-variant `ConsentOutcome` and cannot carry a signature. A new method
+  (`ask_proved`, default-bodied, returning `Outcome` plus an optional `Proof`) carries it; this is a new
+  trait method, not a change to `ask_bound`.
+- `Approval` is a plain public struct built by literal in this workspace; adding `proof:
+  Option<Proof>` is **source-breaking** for those literals (minor bump pre-1.0). Serialised stores stay
+  readable (`#[serde(default, skip_serializing_if = "Option::is_none")]`); an older binary reading a newer
+  store ignores the field, which is a silent loss of the proof and is stated in the changelog.
+- A new store file (the spent-nonce set), a new CLI command (`enroll-phone`), and a relay protocol are new
+  public concepts; none of this is "no new concept". Enrolment is `enroll-phone`, matching section 3's
+  spelling.
+
+### Recommendation
+
+Do **not** build C (it cannot show the text) or D (no signature we hold). Build **A over a self-hosted
+relay, with E as the no-relay path**, only after CireSnave rules on three things: whether to run a relay
+at all, whether a phone app is in scope (and in which repo), and whether elevated enrolment is acceptable.
+Until then S1 and S2 stand alone, and S3 (FIDO2) is a valid, weaker provider whose limits section 6
+states; this section is the plan if he wants the stronger property, and the limits above are what it
+still does not give him.
