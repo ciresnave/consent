@@ -6,7 +6,7 @@ members = ["crates/user-request", "crates/with-secret"]
 # OverMind's numbering (0.12.0 at the move, OverMind main 57fae94; this repo allocates its own
 # numbers since) so an installed binary still says which release it came from.
 [workspace.package]
-version = "0.15.7"
+version = "0.15.8"
 edition = "2021"
 # Floor set by the deps: lane-state 0.14.27 and sysinfo 0.39.6 require 1.95 (measured: 1.91 fails).
 rust-version = "1.95"
