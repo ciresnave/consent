@@ -69,6 +69,7 @@ fn req(role: &str, subject: &str) -> Request {
         summary: "run: psql -f seed.sql".into(),
         requester: who(role),
         reason: "seed the db".into(),
+        allowed_lanes: None,
     }
 }
 
@@ -648,6 +649,7 @@ fn restore(role: &str, plan: &str) -> Request {
         summary: "restore 3 agents".into(),
         requester: who(role),
         reason: "reboot".into(),
+        allowed_lanes: None,
     }
 }
 

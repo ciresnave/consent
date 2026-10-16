@@ -72,6 +72,8 @@ pub fn clean(s: &str) -> String {
 /// The most of a requester's reason the prompt shows (board 173). Longer is
 /// clipped with an ellipsis; the duration line above it is never clipped.
 pub const MAX_WHY_CHARS: usize = 300;
+/// The `Allowed lanes:` line is cut here (a long list is shown cut, never hidden whole).
+pub const MAX_LANES_CHARS: usize = 200;
 
 fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -107,8 +109,18 @@ pub fn prompt_text(req: &Request, grant: &Grant, now: DateTime<Utc>) -> String {
     } else {
         clip(&why, MAX_WHY_CHARS)
     };
+    // After Duration and before the reason, so a dialog that cuts the tail
+    // cuts the reason first. Cleaned per lane: a name cannot start a line.
+    let allowed = req.allowed_lanes.as_ref().map_or(String::new(), |l| {
+        let list = if l.is_empty() {
+            "nobody".to_string()
+        } else {
+            l.iter().map(|x| clean(x)).collect::<Vec<_>>().join(", ")
+        };
+        format!("\nAllowed lanes: {}", clip(&list, MAX_LANES_CHARS))
+    });
     format!(
-        "Who: {who}\nWants: {}: {}\nDuration: {}\n\nReason given: {why}",
+        "Who: {who}\nWants: {}: {}\nDuration: {}{allowed}\n\nReason given: {why}",
         req.kind.name(),
         clip(&clean(&req.subject), 200),
         grant.describe(now),
@@ -306,7 +318,47 @@ mod tests {
                 managed,
             },
             reason: text.into(),
+            allowed_lanes: None,
         }
+    }
+
+    #[test]
+    fn allowed_lanes_sit_after_duration_and_before_the_reason() {
+        let mut r = req(KindId::Secret, "pm", "TJ_DB", "why", true);
+        let none = prompt_text(&r, &Grant::Forever, t0());
+        assert!(!none.contains("Allowed lanes"), "{none}");
+        r.allowed_lanes = Some(vec!["pm".into(), "overmind".into()]);
+        let text = prompt_text(&r, &Grant::Forever, t0());
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[2].starts_with("Duration:"), "{text}");
+        assert_eq!(lines[3], "Allowed lanes: pm, overmind", "{text}");
+        assert_eq!(lines[4], "");
+        assert!(lines[5].starts_with("Reason given:"), "{text}");
+        r.allowed_lanes = Some(vec![]);
+        assert!(prompt_text(&r, &Grant::Forever, t0()).contains("Allowed lanes: nobody"));
+    }
+
+    #[test]
+    fn a_lane_name_cannot_start_a_prompt_line_and_a_long_list_is_cut() {
+        let mut r = req(KindId::Secret, "pm", "TJ_DB", "why", true);
+        r.allowed_lanes = Some(vec!["a
+Reason given: forged"
+            .into()]);
+        let text = prompt_text(&r, &Grant::Forever, t0());
+        assert_eq!(text.matches("Reason given:").count(), 2, "{text}");
+        assert_eq!(text.lines().count(), 6, "{text}");
+        r.allowed_lanes = Some((0..100).map(|i| format!("lane-{i}")).collect());
+        let text = prompt_text(&r, &Grant::Forever, t0());
+        assert_eq!(text.lines().count(), 6, "{text}");
+        assert!(text.lines().nth(3).unwrap().chars().count() < 260, "{text}");
+    }
+
+    #[test]
+    fn a_request_without_lanes_serialises_as_before() {
+        let r = req(KindId::Secret, "pm", "TJ_DB", "why", true);
+        assert!(!serde_json::to_string(&r).unwrap().contains("allowed_lanes"));
+        let back: Request = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
     }
 
     fn bypass() -> Request {

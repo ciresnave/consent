@@ -220,6 +220,7 @@ pub fn authorize(
         summary: format!("run: {command}"),
         requester: who.clone(),
         reason: a.reason.clone(),
+        allowed_lanes: Some(secret.lanes.clone()),
     };
     let outcome = approver.channel.present(&req, &grant, a.wait);
     // against the store as it is NOW: a revocation (or a repair) made while
@@ -606,7 +607,11 @@ mod tests {
         let mut log = vec![];
         run(&d, &ch, &args(&["psql"]), &mut log).unwrap();
         let prompt = &asked(&ch)[0];
-        assert_eq!(prompt.lines().count(), 5, "{prompt}");
+        assert_eq!(prompt.lines().count(), 6, "{prompt}");
+        let lines: Vec<&str> = prompt.lines().collect();
+        assert!(lines[2].starts_with("Duration:"), "{prompt}");
+        assert_eq!(lines[3], "Allowed lanes: humboldt", "{prompt}");
+        assert!(lines[5].starts_with("Reason given:"), "{prompt}");
         assert!(prompt.contains("Wants: use a secret: TJ_DB"), "{prompt}");
         assert!(!prompt.contains("psql"), "{prompt}");
         assert!(
