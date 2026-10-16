@@ -38,7 +38,25 @@ pub fn resolve(
             break;
         } // reused pid
         if is_claude(&parent.name) {
-            return Ok(match states.iter().find(|s| s.pid == parent.pid) {
+            let same_pid: Vec<&LaneState> = states.iter().filter(|s| s.pid == parent.pid).collect();
+            if same_pid.len() > 1 {
+                let mut roles: Vec<&str> = same_pid.iter().map(|s| s.role.as_str()).collect();
+                roles.sort_unstable();
+                eprintln!(
+                    "with-secret: warning: claude pid {} is recorded by {} lane-state files ({}); using the newest",
+                    parent.pid,
+                    same_pid.len(),
+                    roles.join(", ")
+                );
+            }
+            // Stale twins share a pid (design 2026-10-16 s2): newest wins, ties
+            // go to the alphabetically first role so order never matters.
+            let newest = same_pid.into_iter().max_by(|a, b| {
+                a.updated_at
+                    .cmp(&b.updated_at)
+                    .then_with(|| b.role.cmp(&a.role))
+            });
+            return Ok(match newest {
                 Some(s) => Requester {
                     role: s.role.clone(),
                     session_id: s.session_id.clone(),
@@ -107,6 +125,12 @@ mod tests {
         .unwrap()
     }
 
+    fn state_at(role: &str, pid: u32, session: &str, updated_at: &str) -> LaneState {
+        let mut s = state(role, pid, session);
+        s.updated_at = updated_at.parse().unwrap();
+        s
+    }
+
     // claude(10) -> bash(20) -> with-secret(30)
     fn table() -> Vec<ProcEntry> {
         vec![
@@ -167,6 +191,28 @@ mod tests {
     #[test]
     fn self_missing_from_the_table_fails_closed() {
         assert!(resolve(&table(), 77, &[]).is_err());
+    }
+
+    #[test]
+    fn a_pid_shared_by_two_state_files_resolves_to_the_newest() {
+        // The stale twin sorts first in directory order; it must not win.
+        let old = state_at("aaa-stale", 10, "s-old", "2026-10-01T00:00:00Z");
+        let new = state_at("overmind", 10, "s-new", "2026-10-16T00:00:00Z");
+        for states in [vec![old.clone(), new.clone()], vec![new, old]] {
+            let r = resolve(&table(), 30, &states).unwrap();
+            assert_eq!(r.role, "overmind");
+            assert_eq!(r.session_id, "s-new");
+        }
+    }
+
+    #[test]
+    fn equal_timestamps_resolve_the_same_way_in_any_order() {
+        let a = state_at("alpha", 10, "s-a", "2026-10-16T00:00:00Z");
+        let b = state_at("beta", 10, "s-b", "2026-10-16T00:00:00Z");
+        let r1 = resolve(&table(), 30, &[a.clone(), b.clone()]).unwrap();
+        let r2 = resolve(&table(), 30, &[b, a]).unwrap();
+        assert_eq!(r1, r2);
+        assert_eq!(r1.role, "alpha");
     }
 
     #[test]
