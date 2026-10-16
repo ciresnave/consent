@@ -92,6 +92,9 @@ pub fn parse_lanes(arg: &str) -> Result<Vec<String>, String> {
         if l.is_empty() {
             return Err("--lanes: empty lane name (use `none` for nobody)".into());
         }
+        if l.chars().any(char::is_control) {
+            return Err(format!("--lanes: {l:?} has a control character"));
+        }
         if l == "none" || l.starts_with("--") {
             return Err(format!(
                 "--lanes: '{l}' is not a lane name (`none` stands alone; a flag was taken as a value?)"
@@ -192,6 +195,15 @@ impl<P: Protector> VaultStore<P> {
         write_atomic(&self.dir.join(VAULT_FILE), &blob)?;
         write_atomic(&self.dir.join(MASKS_FILE), &self.protector.protect(&masks)?)?;
         remove_if_present(&self.dir.join(LEGACY_MASKS_FILE))
+    }
+
+    /// Writes `vault.bin` ONLY. For a change that touches no value (`vault
+    /// allow`): `save` would rebuild `masks.bin` and renew the mask salts.
+    pub fn save_vault_only(&self, vault: &Vault) -> Result<(), String> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
+        let plain = serde_json::to_vec(vault).map_err(|e| e.to_string())?;
+        write_atomic(&self.dir.join(VAULT_FILE), &self.protector.protect(&plain)?)
     }
 
     /// Seal a legacy `masks.json` into `masks.bin` and delete it, along with
@@ -459,6 +471,25 @@ mod tests {
         let raw = std::fs::read(dir.path().join(MASKS_FILE)).unwrap();
         assert_eq!(raw, XorProtector(0x5a).protect(b"[\"new\"]").unwrap());
         assert!(!dir.path().join(LEGACY_MASKS_FILE).exists());
+    }
+
+    #[test]
+    fn save_vault_only_leaves_the_masks_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = xor_store(dir.path());
+        let mut v = Vault::default();
+        v.secrets.insert("TJ_DB".into(), secret("hunter2hunter2"));
+        store.save(&v, b"[\"salted\"]".to_vec()).unwrap();
+        let masks_before = std::fs::read(dir.path().join(MASKS_FILE)).unwrap();
+
+        v.secrets.get_mut("TJ_DB").unwrap().lanes = vec!["pm".into()];
+        store.save_vault_only(&v).unwrap();
+
+        assert_eq!(store.load().unwrap(), v);
+        assert_eq!(
+            std::fs::read(dir.path().join(MASKS_FILE)).unwrap(),
+            masks_before
+        );
     }
 
     /// A leftover temp file as `write_atomic` names it, last written `age` ago.

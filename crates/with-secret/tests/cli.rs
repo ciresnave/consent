@@ -343,3 +343,19 @@ fn a_scratch_vault_never_reaches_the_real_approvals() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
 }
+
+#[test]
+fn vault_allow_checks_its_arguments_and_refuses_a_pipe() {
+    // bad arguments fail first, with the usage text
+    let out = bin().args(["vault", "allow", "FOO"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("usage: vault allow"));
+    // well-formed, but stdin is not a console: refused before any prompt
+    let out = bin()
+        .args(["vault", "allow", "FOO", "--lanes", "pm"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("at a console"));
+}

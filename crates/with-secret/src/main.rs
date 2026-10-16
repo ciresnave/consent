@@ -18,7 +18,7 @@ use with_secret::mask::{mask_json, masks_json, HashMask, StreamMasker};
 use with_secret::platform::SelectedProtector;
 use with_secret::run::{authorize, parse_run, Approver, DEFAULT_WAIT};
 use with_secret::vault::*;
-use with_secret::{audit, dumpcheck, identity};
+use with_secret::{allow, audit, dumpcheck, identity};
 
 fn data_dir() -> Result<PathBuf, String> {
     // ⚠️ TEST-ONLY override. Pointing it elsewhere reaches an EMPTY vault, not
@@ -90,6 +90,7 @@ with-secret NAME --reason \"why\" [--wait-secs N] [--window-mins M] -- <command>
     Approvals live in the user-request store; prompts pass its gate (no re-asking
     within 10 min of a refusal, at most 6 prompts per lane per hour).
 with-secret vault list | set NAME --env VAR --access read|write [--lanes a,b|none] [--rotate-by YYYY-MM-DD]
+                | allow NAME (--lanes a,b|none | --add a,b | --remove a,b) | allow --file lanes.json
                 | remove NAME | check
 with-secret revoke NAME | --all     end approvals now (no Hello: it only removes privilege)
 with-secret hook pre-tool-use | post-tool-use     (Claude Code hooks; JSON on stdin)
@@ -293,6 +294,7 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
             println!("stored {name}");
             Ok(0)
         }
+        Some("allow") => allow_cmd(&store, &args[1..]),
         Some("remove") => {
             let name = args.get(1).ok_or("vault remove NAME")?;
             require_hello("remove", name)?;
@@ -320,8 +322,72 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
             println!("Windows Hello: run `with-secret vault set` to see the prompt; `check` never prompts.");
             Ok(if ok { 0 } else { 1 })
         }
-        _ => Err("vault list | set | remove | check".into()),
+        _ => Err("vault list | set | allow | remove | check".into()),
     }
+}
+
+/// `vault allow`: change who may request entries, without the values. A
+/// person at a console only: a lane or any `claude` is refused, and the Hello text
+/// shows every entry (counted past eight) with its new list.
+fn allow_cmd(store: &VaultStore<SelectedProtector>, args: &[String]) -> Result<u8, String> {
+    use std::io::IsTerminal;
+    let changes = allow::parse_args(args, |f| {
+        std::fs::read_to_string(f).map_err(|e| format!("--file {f}: {e}"))
+    })?;
+    if !std::io::stdin().is_terminal() {
+        return Err("vault allow must be run by a person at a console".into());
+    }
+    let table = SysinfoFacts::new(PathBuf::new())
+        .process_table()
+        .map_err(|e| format!("{e:?}"))?;
+    let states = identity::load_states(&lane_state::platform::state_dir());
+    let who = identity::resolve(&table, std::process::id(), &states)?;
+    if who.managed || who.role != "outside-claude" {
+        return Err(format!(
+            "vault allow is refused for a lane or any claude ({}): ask the PM, who asks CireSnave",
+            who.role
+        ));
+    }
+    let vault = store.load()?;
+    let plan = allow::plan(&vault, &changes)?;
+    let roles: Vec<String> = states.iter().map(|s| s.role.clone()).collect();
+    for w in allow::warnings(&plan, &roles) {
+        eprintln!("warning: {w}");
+    }
+    let parts = allow::binding_parts(&plan);
+    let part_refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
+    let binding = user_request::channel::binding_for("with-secret.v1.binding", &part_refs);
+    let consent = user_request::platform::platform_consent();
+    let audit_path = store.dir.join(AUDIT_FILE);
+    let log = |kind: &str, plan: &[allow::Planned]| {
+        for e in allow::audit_events(kind, plan, &who.role, &who.session_id, who.claude_pid) {
+            if let Err(err) = audit::append(&audit_path, &e) {
+                eprintln!("with-secret: audit log: {err}");
+            }
+        }
+    };
+    match consent.ask_bound(&allow::prompt_text(&plan)?, &binding, DEFAULT_WAIT) {
+        ConsentOutcome::Approved => {}
+        other => {
+            log("allow-refused", &plan);
+            return Err(format!("not changed: {other:?}"));
+        }
+    }
+    // reload: the vault may have changed while the person decided
+    let mut vault = store.load()?;
+    allow::same_as_approved(&plan, &allow::plan(&vault, &changes)?)?;
+    allow::commit(&mut vault, &plan);
+    store.save_vault_only(&vault)?;
+    log("allow-changed", &plan);
+    for p in &plan {
+        let l = if p.new.is_empty() {
+            "none".to_string()
+        } else {
+            p.new.join(",")
+        };
+        println!("{}: lanes={l}", p.name);
+    }
+    Ok(0)
 }
 
 /// ⚠️ Typed at a console, never argv or stdin-from-a-pipe: a value in argv is
