@@ -92,6 +92,9 @@ pub fn parse_lanes(arg: &str) -> Result<Vec<String>, String> {
         if l.is_empty() {
             return Err("--lanes: empty lane name (use `none` for nobody)".into());
         }
+        if l.chars().any(char::is_control) {
+            return Err(format!("--lanes: {l:?} has a control character"));
+        }
         if l == "none" || l.starts_with("--") {
             return Err(format!(
                 "--lanes: '{l}' is not a lane name (`none` stands alone; a flag was taken as a value?)"

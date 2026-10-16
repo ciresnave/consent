@@ -7,8 +7,6 @@
 //! ⚠️ A filter before the prompt, not a boundary: a same-user process can still
 //! read the vault directly.
 
-use std::collections::BTreeMap;
-
 use crate::vault::{validate_name, Vault};
 
 /// How one entry's list changes.
@@ -39,10 +37,17 @@ pub struct Planned {
 const PROMPT_ENTRIES: usize = 8;
 /// A list longer than this is cut in the Hello text, with a count.
 const PROMPT_LIST_CHARS: usize = 120;
+/// The unclipped "newly allowed" line may not be longer than this.
+const MAX_GAINED_CHARS: usize = 300;
 
 fn check_lane(l: &str) -> Result<(), String> {
     if l.trim().is_empty() || l == "none" || l.starts_with("--") || l.contains(',') {
         return Err(format!("'{l}' is not a lane name"));
+    }
+    if l.trim() != l || l.chars().any(char::is_control) {
+        return Err(format!(
+            "{l:?} is not a lane name (whitespace around it, or a control character)"
+        ));
     }
     Ok(())
 }
@@ -95,8 +100,7 @@ pub fn parse_args(
             return Err(USAGE.into());
         }
         let text = read_file(f)?;
-        let map: BTreeMap<String, Vec<String>> =
-            serde_json::from_str(&text).map_err(|e| format!("--file {f}: {e}"))?;
+        let map = parse_file(&text).map_err(|e| format!("--file {f}: {e}"))?;
         if map.is_empty() {
             return Err(format!("--file {f}: no entries"));
         }
@@ -133,6 +137,35 @@ pub fn parse_args(
         Edit::Remove(nonempty(lane_list(remove.unwrap())?, "--remove")?)
     };
     Ok(vec![Change { name, edit }])
+}
+
+/// `{"NAME": ["lane", ...], ...}`. ⚠️ A repeated NAME is an error: a plain
+/// map would keep the last one silently.
+fn parse_file(text: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+    struct Pairs;
+    impl<'de> serde::de::Visitor<'de> for Pairs {
+        type Value = Vec<(String, Vec<String>)>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("an object of NAME: [lanes]")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(
+            self,
+            mut m: M,
+        ) -> Result<Self::Value, M::Error> {
+            let mut out: Vec<(String, Vec<String>)> = Vec::new();
+            while let Some((k, v)) = m.next_entry::<String, Vec<String>>()? {
+                if out.iter().any(|(n, _)| *n == k) {
+                    return Err(serde::de::Error::custom(format!("{k} appears twice")));
+                }
+                out.push((k, v));
+            }
+            Ok(out)
+        }
+    }
+    use serde::Deserializer;
+    serde_json::Deserializer::from_str(text)
+        .deserialize_map(Pairs)
+        .map_err(|e| e.to_string())
 }
 
 pub fn apply(current: &[String], edit: &Edit) -> Vec<String> {
@@ -174,6 +207,17 @@ pub fn plan(vault: &Vault, changes: &[Change]) -> Result<Vec<Planned>, String> {
     Ok(out)
 }
 
+/// ⚠️ After the person approves, the vault is read again. `--add` and
+/// `--remove` are relative, so a vault that changed meanwhile would yield a
+/// list nobody saw. Anything but the very plan that was approved is refused.
+pub fn same_as_approved(approved: &[Planned], replanned: &[Planned]) -> Result<(), String> {
+    if approved == replanned {
+        Ok(())
+    } else {
+        Err("the vault changed while you decided; nothing was written".into())
+    }
+}
+
 /// Writes the planned lists into the vault.
 pub fn commit(vault: &mut Vault, plan: &[Planned]) {
     for p in plan {
@@ -202,11 +246,30 @@ fn clip(s: String) -> String {
 /// What the person sees. ⚠️ Shows each entry and its NEW list (and the old
 /// one): approving a list the approver cannot see would defeat the point.
 /// Entries past `PROMPT_ENTRIES` are counted, and the binding covers them.
-pub fn prompt_text(plan: &[Planned]) -> String {
+pub fn prompt_text(plan: &[Planned]) -> Result<String, String> {
     let mut t = format!(
         "with-secret: change which lanes may request {} secret(s)?",
         plan.len()
     );
+    // Never clipped, and before the entries (a dialog cuts the tail): every
+    // lane that GAINS an entry anywhere in the batch, so a grant on entry 12
+    // or past a long list is still seen.
+    let mut gained: Vec<&str> = Vec::new();
+    for p in plan {
+        for l in &p.new {
+            if !p.old.contains(l) && !gained.contains(&l.as_str()) {
+                gained.push(l);
+            }
+        }
+    }
+    let gained = gained.join(", ");
+    if gained.chars().count() > MAX_GAINED_CHARS {
+        return Err("too many newly allowed lanes to show in one prompt: split the file".into());
+    }
+    t.push_str(&format!(
+        "\nNewly allowed (all entries): {}",
+        if gained.is_empty() { "none" } else { &gained }
+    ));
     for p in plan.iter().take(PROMPT_ENTRIES) {
         t.push_str(&format!(
             "\n{}: {} -> {}",
@@ -218,7 +281,7 @@ pub fn prompt_text(plan: &[Planned]) -> String {
     if plan.len() > PROMPT_ENTRIES {
         t.push_str(&format!("\n... and {} more", plan.len() - PROMPT_ENTRIES));
     }
-    t
+    Ok(t)
 }
 
 /// Parts for `binding_for`: every entry with its full new list, so a
@@ -441,15 +504,17 @@ mod tests {
             old: s(&["pm"]),
             new: s(&["pm", "overmind"]),
         }];
-        let t = prompt_text(&p);
+        let t = prompt_text(&p).unwrap();
         assert!(t.contains("FOO: pm -> pm, overmind"), "{t}");
+        assert!(t.contains("Newly allowed (all entries): overmind"), "{t}");
         assert!(!t.contains("allowd"));
         let p = vec![Planned {
             name: "FOO".into(),
             old: s(&["pm"]),
             new: vec![],
         }];
-        assert!(prompt_text(&p).contains("-> nobody"));
+        let t = prompt_text(&p).unwrap();
+        assert!(t.contains("-> nobody") && t.contains("Newly allowed (all entries): none"));
     }
 
     #[test]
@@ -461,7 +526,7 @@ mod tests {
                 new: s(&["pm"]),
             })
             .collect();
-        let t = prompt_text(&plan);
+        let t = prompt_text(&plan).unwrap();
         assert!(t.contains("SEC_0") && t.contains("SEC_7"));
         assert!(!t.contains("SEC_8"));
         assert!(t.contains("... and 9 more"), "{t}");
@@ -481,7 +546,77 @@ mod tests {
             old: vec![],
             new: long,
         }]);
+        // 60 lanes is more than the unclipped line may carry
+        assert!(t.is_err());
+        let long: Vec<String> = (0..9).map(|i| format!("lane-{i}")).collect();
+        let t = prompt_text(&[Planned {
+            name: "FOO".into(),
+            old: vec![],
+            new: long.iter().cloned().chain(["x".repeat(130)]).collect(),
+        }])
+        .unwrap();
         assert!(t.contains("... ("), "{t}");
+    }
+
+    #[test]
+    fn a_grant_hidden_past_the_clip_or_past_entry_eight_is_still_shown() {
+        let mut plan: Vec<Planned> = (0..12)
+            .map(|i| Planned {
+                name: format!("SEC_{i}"),
+                old: vec![],
+                new: s(&["pm"]),
+            })
+            .collect();
+        plan[11].new.push("sneaky".into());
+        let t = prompt_text(&plan).unwrap();
+        assert!(!t.contains("SEC_11"));
+        assert!(t.contains("Newly allowed (all entries): pm, sneaky"), "{t}");
+        // exactly 8 entries: no "more" line; 9: one
+        assert!(!prompt_text(&plan[..8]).unwrap().contains("more"));
+        assert!(prompt_text(&plan[..9]).unwrap().contains("... and 1 more"));
+        // a lane that only keeps its access is not "newly allowed"
+        let kept = [Planned {
+            name: "FOO".into(),
+            old: s(&["pm"]),
+            new: s(&["pm"]),
+        }];
+        assert!(prompt_text(&kept).unwrap().contains("(all entries): none"));
+    }
+
+    #[test]
+    fn control_characters_and_padding_cannot_forge_prompt_lines() {
+        let evil = r#"{"FOO":["a\nSEC_9: pm -> pm"]}"#;
+        assert!(parse_args(&argv(&["--file", "f"]), |_| Ok(evil.into())).is_err());
+        let padded = r#"{"FOO":[" pm"]}"#;
+        assert!(parse_args(&argv(&["--file", "f"]), |_| Ok(padded.into())).is_err());
+        assert!(parse_args(&argv(&["FOO", "--lanes", "a\nb"]), no_file).is_err());
+        let p = [Planned {
+            name: "FOO".into(),
+            old: vec![],
+            new: s(&["a", "b"]),
+        }];
+        assert_eq!(prompt_text(&p).unwrap().lines().count(), 3);
+    }
+
+    #[test]
+    fn a_repeated_name_in_a_file_is_refused() {
+        let dup = r#"{"FOO":["pm"],"FOO":["x"]}"#;
+        let e = parse_args(&argv(&["--file", "f"]), |_| Ok(dup.into())).unwrap_err();
+        assert!(e.contains("appears twice"), "{e}");
+    }
+
+    #[test]
+    fn only_the_approved_plan_may_be_written() {
+        let before = vault(&[("FOO", &["pm"])]);
+        let add = [Change {
+            name: "FOO".into(),
+            edit: Edit::Add(s(&["x"])),
+        }];
+        let approved = plan(&before, &add).unwrap();
+        assert!(same_as_approved(&approved, &plan(&before, &add).unwrap()).is_ok());
+        // `vault set` rewrote the list between the Hello and the save
+        let after = vault(&[("FOO", &["pm", "evil"])]);
+        assert!(same_as_approved(&approved, &plan(&after, &add).unwrap()).is_err());
     }
 
     #[test]

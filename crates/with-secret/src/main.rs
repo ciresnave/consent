@@ -327,7 +327,7 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
 }
 
 /// `vault allow`: change who may request entries, without the values. A
-/// person at a console only: a managed lane is refused, and the Hello text
+/// person at a console only: a lane or any `claude` is refused, and the Hello text
 /// shows every entry (counted past eight) with its new list.
 fn allow_cmd(store: &VaultStore<SelectedProtector>, args: &[String]) -> Result<u8, String> {
     use std::io::IsTerminal;
@@ -342,9 +342,9 @@ fn allow_cmd(store: &VaultStore<SelectedProtector>, args: &[String]) -> Result<u
         .map_err(|e| format!("{e:?}"))?;
     let states = identity::load_states(&lane_state::platform::state_dir());
     let who = identity::resolve(&table, std::process::id(), &states)?;
-    if who.managed {
+    if who.managed || who.role != "outside-claude" {
         return Err(format!(
-            "vault allow is refused for a lane ({}): ask the PM, who asks CireSnave",
+            "vault allow is refused for a lane or any claude ({}): ask the PM, who asks CireSnave",
             who.role
         ));
     }
@@ -358,13 +358,13 @@ fn allow_cmd(store: &VaultStore<SelectedProtector>, args: &[String]) -> Result<u
     let part_refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
     let binding = user_request::channel::binding_for("with-secret.v1.binding", &part_refs);
     let consent = user_request::platform::platform_consent();
-    match consent.ask_bound(&allow::prompt_text(&plan), &binding, DEFAULT_WAIT) {
+    match consent.ask_bound(&allow::prompt_text(&plan)?, &binding, DEFAULT_WAIT) {
         ConsentOutcome::Approved => {}
         other => return Err(format!("not changed: {other:?}")),
     }
     // reload: the vault may have changed while the person decided
     let mut vault = store.load()?;
-    let plan = allow::plan(&vault, &changes)?;
+    allow::same_as_approved(&plan, &allow::plan(&vault, &changes)?)?;
     allow::commit(&mut vault, &plan);
     store.save_vault_only(&vault)?;
     for p in &plan {
