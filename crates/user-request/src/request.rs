@@ -301,6 +301,12 @@ pub struct Request {
     pub requester: Requester,
     /// Why, in the requester's words (cleaned and clipped in the prompt).
     pub reason: String,
+    /// Only a secret request fills this: the lanes the entry allows, shown in
+    /// the prompt after Duration. Informational, not part of any proof. Left
+    /// out of the serialised form when absent, so other kinds' shape is
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_lanes: Option<Vec<String>>,
 }
 
 impl Request {
@@ -623,6 +629,7 @@ mod tests {
                 managed: false,
             },
             reason: String::new(),
+            allowed_lanes: None,
         };
         assert!(r("everything").check_subject().is_err());
         assert!(r("plan abc123").check_subject().is_ok());
@@ -665,6 +672,7 @@ mod tests {
                 managed: true,
             },
             reason: String::new(),
+            allowed_lanes: None,
         };
         assert!(r(KindId::LaneDialogBypass, "trust")
             .check_subject()

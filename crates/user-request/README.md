@@ -16,8 +16,9 @@ code requesting something from a user could use them interchangeably"*.
 - `Channel`: one way to ask. `HelloChannel` (Windows Hello) is built; `SmsChannel` and `PushChannel`
   are designed for and answer `Unavailable` until built.
 - `prompt_text`: the text the person approves: three lines (who asks, what for, for how long), then
-  the requester's reason under `Reason given:`. The requester line and the duration line are never
-  clipped; the subject and the reason are.
+  for a secret an `Allowed lanes:` line (the lanes its entry allows; cut, with a count, when long),
+  then the requester's reason under `Reason given:`. The requester line and the duration line are
+  never clipped; the subject, the lanes and the reason are.
 
 ## Kinds
 

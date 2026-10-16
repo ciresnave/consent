@@ -72,6 +72,8 @@ pub fn clean(s: &str) -> String {
 /// The most of a requester's reason the prompt shows (board 173). Longer is
 /// clipped with an ellipsis; the duration line above it is never clipped.
 pub const MAX_WHY_CHARS: usize = 300;
+/// The `Allowed lanes:` line is cut here (a long list is shown cut, never hidden whole).
+pub const MAX_LANES_CHARS: usize = 200;
 
 fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -84,7 +86,9 @@ fn clip(s: &str, max: usize) -> String {
 /// The text the person approves: who asks, what for, and for how long
 /// (board 134, CireSnave 2026-10-07: "three things"), then, apart from those
 /// vouched lines, the reason the requester gave (board 173, CireSnave
-/// 2026-10-12: "four things, all prompts"). The summary and the command are
+/// 2026-10-12: "four things, all prompts"). A secret request also carries the
+/// lanes its entry allows: one `Allowed lanes:` line after Duration (cut, with
+/// a count, past `MAX_LANES_CHARS`). The summary and the command are
 /// not in it; the caller logs them. Who and Duration are never clipped; the
 /// subject and the reason are cleaned and clipped (review I2). Duration comes
 /// before the reason, so a dialog that cuts the tail cuts the reason first.
@@ -107,8 +111,24 @@ pub fn prompt_text(req: &Request, grant: &Grant, now: DateTime<Utc>) -> String {
     } else {
         clip(&why, MAX_WHY_CHARS)
     };
+    // After Duration and before the reason, so a dialog that cuts the tail
+    // cuts the reason first. Cleaned per lane: a name cannot start a line.
+    let allowed = req.allowed_lanes.as_ref().map_or(String::new(), |l| {
+        let list = if l.is_empty() {
+            "nobody".to_string()
+        } else {
+            l.iter().map(|x| clean(x)).collect::<Vec<_>>().join(", ")
+        };
+        // a cut list says how many lanes it names, outside the cut
+        let count = if list.chars().count() > MAX_LANES_CHARS {
+            format!(" ({} lanes)", l.len())
+        } else {
+            String::new()
+        };
+        format!("\nAllowed lanes: {}{count}", clip(&list, MAX_LANES_CHARS))
+    });
     format!(
-        "Who: {who}\nWants: {}: {}\nDuration: {}\n\nReason given: {why}",
+        "Who: {who}\nWants: {}: {}\nDuration: {}{allowed}\n\nReason given: {why}",
         req.kind.name(),
         clip(&clean(&req.subject), 200),
         grant.describe(now),
@@ -306,7 +326,64 @@ mod tests {
                 managed,
             },
             reason: text.into(),
+            allowed_lanes: None,
         }
+    }
+
+    #[test]
+    fn allowed_lanes_sit_after_duration_and_before_the_reason() {
+        let mut r = req(KindId::Secret, "pm", "TJ_DB", "why", true);
+        let none = prompt_text(&r, &Grant::Forever, t0());
+        assert!(!none.contains("Allowed lanes"), "{none}");
+        r.allowed_lanes = Some(vec!["pm".into(), "overmind".into()]);
+        let text = prompt_text(&r, &Grant::Forever, t0());
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[2].starts_with("Duration:"), "{text}");
+        assert_eq!(lines[3], "Allowed lanes: pm, overmind", "{text}");
+        assert_eq!(lines[4], "");
+        assert!(lines[5].starts_with("Reason given:"), "{text}");
+        r.allowed_lanes = Some(vec![]);
+        assert!(prompt_text(&r, &Grant::Forever, t0()).contains("Allowed lanes: nobody"));
+    }
+
+    #[test]
+    fn a_lane_name_cannot_start_a_prompt_line_and_a_long_list_is_cut() {
+        let mut r = req(KindId::Secret, "pm", "TJ_DB", "why", true);
+        r.allowed_lanes = Some(vec!["a
+Reason given: forged"
+            .into()]);
+        let text = prompt_text(&r, &Grant::Forever, t0());
+        assert_eq!(text.matches("Reason given:").count(), 2, "{text}");
+        assert_eq!(text.lines().count(), 6, "{text}");
+        r.allowed_lanes = Some((0..100).map(|i| format!("lane-{i}")).collect());
+        let text = prompt_text(&r, &Grant::Forever, t0());
+        assert_eq!(text.lines().count(), 6, "{text}");
+        let line = text.lines().nth(3).unwrap();
+        assert!(
+            line.contains("…") && line.ends_with("(100 lanes)"),
+            "{text}"
+        );
+        assert!(line.chars().count() < 260, "{text}");
+        assert!(text.starts_with("Who: lane 'pm'\nWants:"), "{text}");
+        assert!(
+            text.lines().nth(2).unwrap().starts_with("Duration:"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_request_without_lanes_serialises_as_before() {
+        let r = req(KindId::Secret, "pm", "TJ_DB", "why", true);
+        assert!(!serde_json::to_string(&r).unwrap().contains("allowed_lanes"));
+        let back: Request = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
+        // a stored form from before the field existed still loads
+        let old = r#"{"kind":"Secret","subject":"TJ_DB","summary":"why","requester":
+            {"role":"pm","session_id":"s","claude_pid":42,"claude_start_secs":1,"managed":true},
+            "reason":"why"}"#;
+        let loaded: Request = serde_json::from_str(old).unwrap();
+        assert_eq!(loaded.allowed_lanes, None);
+        assert_eq!(loaded, r);
     }
 
     fn bypass() -> Request {
