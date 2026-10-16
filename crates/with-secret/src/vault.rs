@@ -57,6 +57,10 @@ pub struct Secret {
     /// Least privilege (e): a write credential should be short-lived. Nothing
     /// enforces rotation; `vault list` flags a secret past this date.
     pub rotate_by: Option<NaiveDate>,
+    /// Roles allowed to request this secret, matched exactly. Empty means
+    /// nobody (fail-closed), which is also what a legacy entry reads as.
+    #[serde(default)]
+    pub lanes: Vec<String>,
 }
 
 impl std::fmt::Debug for Secret {
@@ -67,6 +71,7 @@ impl std::fmt::Debug for Secret {
             .field("access", &self.access)
             .field("created_at", &self.created_at)
             .field("rotate_by", &self.rotate_by)
+            .field("lanes", &self.lanes)
             .finish()
     }
 }
@@ -74,6 +79,39 @@ impl std::fmt::Debug for Secret {
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
 pub struct Vault {
     pub secrets: BTreeMap<String, Secret>,
+}
+
+/// `--lanes a,b,c` or `--lanes none` (an entry nobody can request).
+pub fn parse_lanes(arg: &str) -> Result<Vec<String>, String> {
+    if arg == "none" {
+        return Ok(Vec::new());
+    }
+    let mut lanes: Vec<String> = Vec::new();
+    for l in arg.split(',') {
+        let l = l.trim();
+        if l.is_empty() {
+            return Err("--lanes: empty lane name (use `none` for nobody)".into());
+        }
+        if l == "none" || l.starts_with("--") {
+            return Err(format!(
+                "--lanes: '{l}' is not a lane name (`none` stands alone; a flag was taken as a value?)"
+            ));
+        }
+        if !lanes.iter().any(|x| x == l) {
+            lanes.push(l.to_string());
+        }
+    }
+    Ok(lanes)
+}
+
+/// The list a `vault set` stores: an explicit `--lanes` wins; otherwise a
+/// rotation keeps the stored list, and a NEW name must say who may ask.
+pub fn lanes_for_set(flag: Option<&str>, existing: Option<&Secret>) -> Result<Vec<String>, String> {
+    match (flag, existing) {
+        (Some(f), _) => parse_lanes(f),
+        (None, Some(s)) => Ok(s.lanes.clone()),
+        (None, None) => Err("--lanes a,b,c (or `none`) is required for a new secret".into()),
+    }
 }
 
 /// Encrypt and decrypt bytes at rest. Off Windows this is the tiered
@@ -271,7 +309,38 @@ mod tests {
             access: Access::Read,
             created_at: Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap(),
             rotate_by: None,
+            lanes: vec![],
         }
+    }
+
+    #[test]
+    fn a_legacy_entry_without_lanes_reads_as_nobody() {
+        let legacy = r#"{"value":"v","env_var":"E","access":"read","created_at":"2026-10-01T00:00:00Z","rotate_by":null}"#;
+        let s: Secret = serde_json::from_str(legacy).unwrap();
+        assert!(s.lanes.is_empty());
+    }
+
+    #[test]
+    fn lanes_parse_and_dedupe() {
+        assert_eq!(parse_lanes("none").unwrap(), Vec::<String>::new());
+        assert_eq!(
+            parse_lanes("pm, overmind,pm").unwrap(),
+            vec!["pm", "overmind"]
+        );
+        assert!(parse_lanes("pm,,x").is_err());
+        assert!(parse_lanes("").is_err());
+        assert!(parse_lanes("none,pm").is_err());
+        assert!(parse_lanes("--rotate-by").is_err());
+    }
+
+    #[test]
+    fn a_new_name_needs_lanes_and_a_rotation_keeps_them() {
+        assert!(lanes_for_set(None, None).is_err());
+        assert_eq!(lanes_for_set(Some("pm"), None).unwrap(), vec!["pm"]);
+        let mut s = secret("v");
+        s.lanes = vec!["pm".into()];
+        assert_eq!(lanes_for_set(None, Some(&s)).unwrap(), vec!["pm"]);
+        assert!(lanes_for_set(Some("none"), Some(&s)).unwrap().is_empty());
     }
 
     #[test]
