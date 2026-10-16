@@ -3,6 +3,10 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.15.7 (allowlist step 3: `vault allow`)
+
+- **with-secret: `vault allow`** changes who may request an entry without re-entering the value. Each change leaves an audit line per entry (`allow-changed`, with "old -> new" in the reason; `allow-refused`); the plan is re-checked against what was approved, newly allowed lanes are printed, lane names are validated, and `outside-claude` can only be changed from the console (OverMind consent#14). Mechanism only: no entry is restricted until a ruling on board 225 sets lanes.
+
 ## 0.15.6 (allowlist step 2; mechanism only, no entry is restricted until lanes are set)
 
 - **with-secret: per-entry requester allowlist.** A vault entry gains an optional `lanes` field and an authorize check before the approval prompt; a bad `--lanes` is rejected before the secret is typed, and `none` or a flag is not a lane name. The list is a filter before the prompt, not a security boundary (OverMind consent#13, step 2 of the requester-allowlist order).
