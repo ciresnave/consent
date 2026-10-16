@@ -119,7 +119,8 @@ plaintext it already holds.
   are the controls. This is an accepted limit.
   - ⚠️ Since board 134 (2026-10-07) the prompt names who, which secret and how long, but **not the
     command**; since board 173 (2026-10-12, "four things, all prompts") it also shows the reason,
-    labelled `Reason given:`. The command is in the access log. So the person approves the secret
+    labelled `Reason given:`; since the requester allowlist it also shows `Allowed lanes:` (the entry's
+    list, after Duration). The command is in the access log. So the person approves the secret
     for a duration and a stated reason, not a command.
 
 Least privilege (e) limits how much damage a leaked secret can do. It is a procedure for
