@@ -36,6 +36,7 @@ fn vault() -> Vault {
             access: Access::Read,
             created_at: Utc::now(),
             rotate_by: None,
+            lanes: vec!["humboldt".into()],
         },
     );
     v

@@ -89,7 +89,7 @@ with-secret NAME --reason \"why\" [--wait-secs N] [--window-mins M] -- <command>
     reason go to the access log. Cancel denies.
     Approvals live in the user-request store; prompts pass its gate (no re-asking
     within 10 min of a refusal, at most 6 prompts per lane per hour).
-with-secret vault list | set NAME --env VAR --access read|write [--rotate-by YYYY-MM-DD]
+with-secret vault list | set NAME --env VAR --access read|write [--lanes a,b|none] [--rotate-by YYYY-MM-DD]
                 | remove NAME | check
 with-secret revoke NAME | --all     end approvals now (no Hello: it only removes privilege)
 with-secret hook pre-tool-use | post-tool-use     (Claude Code hooks; JSON on stdin)
@@ -228,11 +228,16 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
             for (name, s) in &store.load()?.secrets {
                 let overdue = s.rotate_by.is_some_and(|d| d < today);
                 println!(
-                    "{name}  env={}  access={:?}  created={}  rotate_by={}{}",
+                    "{name}  env={}  access={:?}  created={}  rotate_by={}  lanes={}{}",
                     s.env_var,
                     s.access,
                     s.created_at.format("%Y-%m-%d"),
                     s.rotate_by.map(|d| d.to_string()).unwrap_or("-".into()),
+                    if s.lanes.is_empty() {
+                        "none".to_string()
+                    } else {
+                        s.lanes.join(",")
+                    },
                     if overdue {
                         "  ⚠️ PAST ROTATE-BY"
                     } else {
@@ -269,6 +274,7 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
             validate_value(&value)?;
             require_hello("store", name)?;
             let mut vault = store.load()?;
+            let lanes = lanes_for_set(opt("--lanes").as_deref(), vault.secrets.get(name))?;
             vault.secrets.insert(
                 name.clone(),
                 Secret {
@@ -277,6 +283,7 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
                     access,
                     created_at: Utc::now(),
                     rotate_by,
+                    lanes,
                 },
             );
             store.save(&vault, masks_json(&vault)?)?;

@@ -172,6 +172,15 @@ pub fn authorize(
         ));
     };
     let not_released = |why: &str| format!("with-secret: {} not released - {why}", a.secret);
+    // before the store and the gate: a lane that is not listed never reaches
+    // a prompt, and removing a lane takes effect despite an existing grant
+    if !secret.lanes.contains(&who.role) {
+        log.push(event("not-allowed", a, who));
+        return Err(not_released(&format!(
+            "role '{}' is not allowed to request it; ask the PM to add the lane",
+            who.role
+        )));
+    }
     // a grant over the kind's maximum, or that cannot be represented, never
     // reaches the store or the person
     let grant = grant_for(a.window, Local::now());
@@ -335,6 +344,7 @@ mod tests {
                 access: Access::Read,
                 created_at: Utc::now(),
                 rotate_by: None,
+                lanes: vec!["humboldt".into()],
             },
         );
         v
@@ -370,6 +380,52 @@ mod tests {
     }
     fn kinds(log: &[Event]) -> Vec<&str> {
         log.iter().map(|e| e.event.as_str()).collect()
+    }
+
+    #[test]
+    fn a_role_not_on_the_list_is_refused_before_any_prompt() {
+        let dir = store_dir();
+        let ch = hello(ConsentOutcome::Approved);
+        let mut v = vault();
+        v.secrets.get_mut("TJ_DB").unwrap().lanes = vec!["pm".into()];
+        let mut log = vec![];
+        let err =
+            authorize(&args(&["psql"]), &v, &who(), &approver(&dir, &ch), &mut log).unwrap_err();
+        assert!(err.contains("TJ_DB") && err.contains("ask the PM"), "{err}");
+        assert_eq!(kinds(&log), vec!["not-allowed"]);
+        assert!(asked(&ch).is_empty(), "prompted a lane that is not allowed");
+        assert!(!dir.exists(), "opened the approval store");
+    }
+
+    #[test]
+    fn an_empty_list_allows_nobody() {
+        let dir = store_dir();
+        let ch = hello(ConsentOutcome::Approved);
+        let mut v = vault();
+        v.secrets.get_mut("TJ_DB").unwrap().lanes.clear();
+        let mut log = vec![];
+        authorize(&args(&["psql"]), &v, &who(), &approver(&dir, &ch), &mut log).unwrap_err();
+        assert_eq!(kinds(&log), vec!["not-allowed"]);
+    }
+
+    #[test]
+    fn removing_a_lane_beats_its_existing_grant() {
+        let dir = store_dir();
+        let ch = hello(ConsentOutcome::Approved);
+        let mut log = vec![];
+        run(&dir, &ch, &args(&["psql"]), &mut log).unwrap();
+        let mut v = vault();
+        v.secrets.get_mut("TJ_DB").unwrap().lanes = vec!["pm".into()];
+        let mut log2 = vec![];
+        authorize(
+            &args(&["psql"]),
+            &v,
+            &who(),
+            &approver(&dir, &ch),
+            &mut log2,
+        )
+        .unwrap_err();
+        assert_eq!(kinds(&log2), vec!["not-allowed"]);
     }
 
     #[test]
