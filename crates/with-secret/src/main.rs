@@ -358,15 +358,27 @@ fn allow_cmd(store: &VaultStore<SelectedProtector>, args: &[String]) -> Result<u
     let part_refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
     let binding = user_request::channel::binding_for("with-secret.v1.binding", &part_refs);
     let consent = user_request::platform::platform_consent();
+    let audit_path = store.dir.join(AUDIT_FILE);
+    let log = |kind: &str, plan: &[allow::Planned]| {
+        for e in allow::audit_events(kind, plan, &who.role, &who.session_id, who.claude_pid) {
+            if let Err(err) = audit::append(&audit_path, &e) {
+                eprintln!("with-secret: audit log: {err}");
+            }
+        }
+    };
     match consent.ask_bound(&allow::prompt_text(&plan)?, &binding, DEFAULT_WAIT) {
         ConsentOutcome::Approved => {}
-        other => return Err(format!("not changed: {other:?}")),
+        other => {
+            log("allow-refused", &plan);
+            return Err(format!("not changed: {other:?}"));
+        }
     }
     // reload: the vault may have changed while the person decided
     let mut vault = store.load()?;
     allow::same_as_approved(&plan, &allow::plan(&vault, &changes)?)?;
     allow::commit(&mut vault, &plan);
     store.save_vault_only(&vault)?;
+    log("allow-changed", &plan);
     for p in &plan {
         let l = if p.new.is_empty() {
             "none".to_string()

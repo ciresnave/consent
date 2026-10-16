@@ -218,6 +218,30 @@ pub fn same_as_approved(approved: &[Planned], replanned: &[Planned]) -> Result<(
     }
 }
 
+/// One audit line per entry: `kind` is `allow-changed` (written) or
+/// `allow-refused` (the person did not approve). Old and new lists go in
+/// `reason`, never a value.
+pub fn audit_events(
+    kind: &str,
+    plan: &[Planned],
+    role: &str,
+    session_id: &str,
+    claude_pid: u32,
+) -> Vec<crate::audit::Event> {
+    plan.iter()
+        .map(|p| crate::audit::Event {
+            at: chrono::Utc::now(),
+            event: kind.into(),
+            secret: p.name.clone(),
+            role: role.into(),
+            session_id: session_id.into(),
+            claude_pid,
+            command: "vault allow".into(),
+            reason: format!("{} -> {}", show(&p.old), show(&p.new)),
+        })
+        .collect()
+}
+
 /// Writes the planned lists into the vault.
 pub fn commit(vault: &mut Vault, plan: &[Planned]) {
     for p in plan {
@@ -603,6 +627,31 @@ mod tests {
         let dup = r#"{"FOO":["pm"],"FOO":["x"]}"#;
         let e = parse_args(&argv(&["--file", "f"]), |_| Ok(dup.into())).unwrap_err();
         assert!(e.contains("appears twice"), "{e}");
+    }
+
+    #[test]
+    fn every_entry_leaves_an_audit_line_with_old_and_new() {
+        let plan = [
+            Planned {
+                name: "FOO".into(),
+                old: s(&["pm"]),
+                new: s(&["pm", "x"]),
+            },
+            Planned {
+                name: "BAR".into(),
+                old: s(&["a"]),
+                new: vec![],
+            },
+        ];
+        let ev = audit_events("allow-changed", &plan, "outside-claude", "sess", 7);
+        assert_eq!(ev.len(), 2);
+        assert_eq!(ev[0].event, "allow-changed");
+        assert_eq!(ev[0].secret, "FOO");
+        assert_eq!(ev[0].reason, "pm -> pm, x");
+        assert_eq!(ev[1].reason, "a -> nobody");
+        assert!(ev
+            .iter()
+            .all(|e| e.command == "vault allow" && e.claude_pid == 7));
     }
 
     #[test]

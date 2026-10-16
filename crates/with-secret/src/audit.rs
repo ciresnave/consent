@@ -11,7 +11,7 @@ use serde::Serialize;
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Event {
     pub at: DateTime<Utc>,
-    pub event: String, // granted | used | denied | timed-out | unavailable | refused
+    pub event: String, // granted | used | denied | timed-out | unavailable | refused | not-allowed | allow-changed | allow-refused
     pub secret: String,
     pub role: String,
     pub session_id: String,
