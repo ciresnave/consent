@@ -92,6 +92,11 @@ pub fn parse_lanes(arg: &str) -> Result<Vec<String>, String> {
         if l.is_empty() {
             return Err("--lanes: empty lane name (use `none` for nobody)".into());
         }
+        if l == "none" || l.starts_with("--") {
+            return Err(format!(
+                "--lanes: '{l}' is not a lane name (`none` stands alone; a flag was taken as a value?)"
+            ));
+        }
         if !lanes.iter().any(|x| x == l) {
             lanes.push(l.to_string());
         }
@@ -324,6 +329,8 @@ mod tests {
         );
         assert!(parse_lanes("pm,,x").is_err());
         assert!(parse_lanes("").is_err());
+        assert!(parse_lanes("none,pm").is_err());
+        assert!(parse_lanes("--rotate-by").is_err());
     }
 
     #[test]

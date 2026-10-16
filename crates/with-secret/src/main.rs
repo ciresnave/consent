@@ -270,6 +270,9 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
                         .map_err(|e| format!("--rotate-by: {e}"))
                 })
                 .transpose()?;
+            // fail before the person types the secret or answers Hello; the
+            // list actually stored is re-derived below from the vault as it is
+            lanes_for_set(opt("--lanes").as_deref(), store.load()?.secrets.get(name))?;
             let value = read_value_from_console()?;
             validate_value(&value)?;
             require_hello("store", name)?;
