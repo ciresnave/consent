@@ -3,6 +3,10 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.15.5 (allowlist step 1; no behaviour change outside the tie-break)
+
+- **Identity: shared-pid tie-break.** When two lane records share a pid, the newest `updated_at` wins; ties go to the alphabetically first role (OverMind consent#12, step 1 of the requester-allowlist order).
+
 ## 0.15.4 (S6 of docs/LINUX-PORT-DESIGN.md / U8; additive, Windows behaviour unchanged)
 
 - **with-secret on Linux.** `platform` module: the vault directory resolves under the XDG state directory (Windows keeps `%LOCALAPPDATA%`); the vault key goes through the same tiered protector as the approvals store (purpose label `with-secret`, its own key file; `keyfile` tier, weaker than DPAPI and said so by `check` and the README); `vault set` has hidden input on Unix (termios); `main.rs` no longer names DPAPI or Hello concretely.
