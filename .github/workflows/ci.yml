@@ -57,10 +57,10 @@ jobs:
         run: cargo fmt --check
 
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: cargo test
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --locked --workspace --no-fail-fast
 
   # The `fido2` feature is opt-in, so the default legs never compile it.
   # Linux needs pkg-config and libudev-dev for hidapi's hidraw backend.
@@ -87,10 +87,10 @@ jobs:
           components: clippy
 
       - name: cargo clippy (fido2)
-        run: cargo clippy -p user-request --all-targets --features fido2 -- -D warnings
+        run: cargo clippy --locked -p user-request --all-targets --features fido2 -- -D warnings
 
       - name: cargo test (fido2)
-        run: cargo test -p user-request --features fido2 --no-fail-fast
+        run: cargo test --locked -p user-request --features fido2 --no-fail-fast
 
   docs:
     name: docs build (warnings are errors)
@@ -103,7 +103,7 @@ jobs:
         with:
           toolchain: stable
       - name: cargo doc
-        run: cargo doc --workspace --no-deps
+        run: cargo doc --locked --workspace --no-deps
 
   msrv:
     name: MSRV (rust-version in Cargo.toml)
@@ -127,7 +127,7 @@ jobs:
       - name: cargo check on the MSRV toolchain
         run: |
           rustc --version
-          cargo check --workspace --all-targets
+          cargo check --locked --workspace --all-targets
 
   deny:
     name: cargo deny (advisories, licences, bans, sources)

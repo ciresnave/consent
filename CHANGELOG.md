@@ -3,6 +3,10 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.15.9 (CI hardening, no code change)
+
+- CI: `--locked` on the cargo clippy/test/doc/check steps, and a CODEOWNERS file (`* @ciresnave`). No behaviour change.
+
 ## 0.15.8 (allowlist step 4: the prompt names the allowed lanes)
 
 - **Approval prompt gains an `Allowed lanes:` line** for with-secret requests (optional `Request.allowed_lanes`; other request kinds keep their shape), so the person approving sees which lanes an entry admits (OverMind consent#15). The mechanism is complete; no entry is restricted until board 225 is ruled.
