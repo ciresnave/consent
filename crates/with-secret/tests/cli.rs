@@ -251,13 +251,13 @@ fn revoke_ends_secrets_grants_in_the_store_and_nothing_else() {
     let grant = |kind: KindId, subject: &str, who: &Requester| {
         let mut s = Store::open(&dir, &Selected::for_dir(&dir), Some(head.clone())).unwrap();
         let r = s.may_ask(who, kind, subject, &AuditOnly).unwrap();
-        let ap = Approval {
+        let ap = Approval::for_test(
             kind,
-            subject: subject.into(),
-            requester: who.clone(),
-            approved_at: chrono::Utc::now(),
-            expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
-        };
+            subject,
+            who.clone(),
+            chrono::Utc::now(),
+            Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+        );
         s.resolve(&r, &Outcome::Approved(ap), &AuditOnly)
             .unwrap()
             .unwrap()
@@ -358,4 +358,33 @@ fn vault_allow_checks_its_arguments_and_refuses_a_pipe() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("at a console"));
+}
+
+/// Audit finding 3 (2026-10-18): a mistyped hook kind blocks (exit 2).
+#[test]
+fn a_mistyped_hook_kind_blocks_instead_of_allowing() {
+    let (code, out) = hook(
+        "pre_tool_use", // underscore typo in settings.json
+        serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "env"}}),
+    );
+    assert_eq!(
+        (code, out.as_str()),
+        (2, ""),
+        "typo'd kind must not silently allow"
+    );
+}
+
+/// Not changed, pinned: Claude Code sends exact names, and the hook only
+/// inspects the tools it knows; any other tool name is allowed by design.
+#[test]
+fn an_unknown_tool_name_is_allowed() {
+    let (code, out) = hook(
+        "pre-tool-use",
+        serde_json::json!({"tool_name": "bash", "tool_input": {"command": "env"}}),
+    );
+    assert_eq!(
+        (code, out.as_str()),
+        (0, ""),
+        "unknown tool name silently allows"
+    );
 }

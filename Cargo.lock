@@ -1144,6 +1144,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "user-request",
  "windows",
  "windows-future",
 ]
