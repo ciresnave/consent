@@ -44,12 +44,8 @@ fn seed(dir: &Path) -> (String, String) {
         managed: true,
     };
     let now = Utc::now();
-    let mk = |kind, subject: &str, expires_at| Approval {
-        kind,
-        subject: subject.into(),
-        requester: who.clone(),
-        approved_at: now,
-        expires_at,
+    let mk = |kind, subject: &str, expires_at| {
+        Approval::for_test(kind, subject, who.clone(), now, expires_at)
     };
     // the only way in: a reservation the channel approved
     let mut grant = |mut ap: Approval| {
@@ -210,13 +206,7 @@ fn list_shows_an_unspent_one_use_approval_as_one_use_not_forever() {
     let r = s
         .may_ask(&who, KindId::RestorePlan, &subject, &AuditOnly)
         .unwrap();
-    let ap = Approval {
-        kind: KindId::RestorePlan,
-        subject,
-        requester: who,
-        approved_at: Utc::now(),
-        expires_at: None,
-    };
+    let ap = Approval::for_test(KindId::RestorePlan, &subject, who, Utc::now(), None);
     let id = s
         .resolve(&r, &Outcome::Approved(ap), &AuditOnly)
         .unwrap()

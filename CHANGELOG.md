@@ -3,6 +3,12 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## Unreleased (compile-time audit, OverMind 2026-10-18; version allocated by the PM)
+
+- **BREAKING: `Approval` is `#[non_exhaustive]`.** Code outside `user-request` can no longer write an `Approval` literal and hand it to `Store::resolve` as if a person had approved (it used to mint a grant with no `Consent`); a `compile_fail` doctest pins it. Tests that need one enable the new `test-support` feature and call `Approval::for_test`. Deserialising one by hand is still possible (the store reads its own file through serde).
+- **with-secret hook: a mistyped hook kind (`pre_tool_use`) now exits 2** instead of printing "allowing" and silently disabling the env-dump check. Runtime trouble (unreadable input, masks file) still fails open, as documented.
+- **with-secret: `mask::unhex` no longer panics** on a non-ASCII character in a corrupt `salt_hex` (it sliced a `&str` by byte offset).
+
 ## 0.15.9 (CI hardening, no code change)
 
 - CI: `--locked` on the cargo clippy/test/doc/check steps, and a CODEOWNERS file (`* @ciresnave`). No behaviour change.

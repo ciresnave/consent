@@ -518,7 +518,14 @@ fn hook(kind: Option<&str>) -> ExitCode {
                 );
             }
         }
-        _ => eprintln!("with-secret hook: unknown hook kind {kind:?}; allowing"),
+        // A typo in the settings command (`pre_tool_use`) is a configuration
+        // error that every call would hit, so it BLOCKS (exit 2) and is seen
+        // at once, instead of silently disabling the check (audit 2026-10-18,
+        // finding 3). Runtime trouble above still fails open.
+        _ => {
+            eprintln!("with-secret hook: unknown hook kind {kind:?}; fix the hook command (pre-tool-use | post-tool-use)");
+            return ExitCode::from(2);
+        }
     }
     ExitCode::SUCCESS
 }

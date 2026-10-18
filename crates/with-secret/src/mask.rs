@@ -94,8 +94,13 @@ fn salted(salt: &[u8], value: &[u8]) -> String {
 }
 
 fn unhex(s: &str) -> Vec<u8> {
-    (0..s.len() / 2)
-        .filter_map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok())
+    // bytes, not &str slices: a non-ASCII char in a corrupt file must not
+    // land a slice boundary inside it (audit 2026-10-18, finding 6)
+    s.as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .filter_map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok())
         .collect()
 }
 

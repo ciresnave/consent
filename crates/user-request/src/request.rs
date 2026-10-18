@@ -327,7 +327,21 @@ impl Request {
 
 /// What an approval grants, with the ABSOLUTE end the person was shown, so
 /// a later wait (or a store) can never stretch it.
+///
+/// `#[non_exhaustive]`: code outside the crate can read every field but cannot
+/// write an `Approval` literal, so an approval can only come from a channel
+/// (audit 2026-10-18, finding 1). ⚠️ The serde impls remain for the store's
+/// own file; deserialising one by hand is still possible.
+///
+/// ```compile_fail
+/// use user_request::{Approval, KindId, Requester};
+/// let who = Requester { role: "r".into(), session_id: "s".into(), claude_pid: 1,
+///     claude_start_secs: 1, managed: true };
+/// let _forged = Approval { kind: KindId::Secret, subject: "S".into(), requester: who,
+///     approved_at: chrono::Utc::now(), expires_at: None };
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Approval {
     pub kind: KindId,
     pub subject: String,
@@ -335,6 +349,26 @@ pub struct Approval {
     pub approved_at: DateTime<Utc>,
     /// `None` for forever.
     pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[cfg(feature = "test-support")]
+impl Approval {
+    /// An approval no person gave. Only with the `test-support` feature.
+    pub fn for_test(
+        kind: KindId,
+        subject: &str,
+        requester: Requester,
+        approved_at: DateTime<Utc>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Self {
+        Self {
+            kind,
+            subject: subject.into(),
+            requester,
+            approved_at,
+            expires_at,
+        }
+    }
 }
 
 #[cfg(test)]

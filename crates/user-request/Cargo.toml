@@ -28,8 +28,12 @@ windows-future = "0.3.2"
 
 [features]
 fido2 = ["dep:ctap-hid-fido2"]
+# `Approval::for_test`: a hand-made approval, for tests that drive the store
+# without a person. Never enable it in a shipped binary.
+test-support = []
 
 [dev-dependencies]
+user-request = { path = ".", features = ["test-support"] }
 # signs test assertions like a key would (fido2 feature tests)
 ring = "0.17.14"
 tempfile = "3.27.0"
