@@ -104,3 +104,57 @@ fn audit_vault_reports_names_and_rules_and_catches_duplicates() {
         assert!(!all.contains(leaked), "audit output carried a value");
     }
 }
+
+#[test]
+fn a_credential_word_wins_over_an_id_suffix() {
+    let value = "my-company-prod-project-name";
+    for name in [
+        "DB_PASSWORD_HOSTNAME",
+        "GITHUB_TOKEN_REGION",
+        "X_SECRET_PROJECT_ID",
+        "A_KEY_ZONE_ID",
+    ] {
+        assert!(!is_non_secret_env_name(name), "{name}");
+        assert!(
+            audit_value(value, &env(&[(name, value)])).is_empty(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn only_a_trailing_suffix_counts_and_case_does_not_matter() {
+    assert!(
+        !is_non_secret_env_name("X_REGION_NAME"),
+        "suffix in the middle"
+    );
+    assert!(is_non_secret_env_name("cloudflare_account_id"));
+    let r = audit_value(ID, &env(&[("cloudflare_account_id", ID)]));
+    assert!(
+        r.iter().any(|s| s.contains("cloudflare_account_id")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn stray_whitespace_on_either_side_does_not_hide_a_match() {
+    let padded = format!("{ID} ");
+    let r = audit_value(&padded, &env(&[("CLOUDFLARE_ACCOUNT_ID", ID)]));
+    assert!(r.iter().any(|s| s.contains("32 hex")), "{r:?}");
+    assert!(
+        r.iter().any(|s| s.contains("CLOUDFLARE_ACCOUNT_ID")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn audit_one_entry_includes_the_duplicate_rule_used_by_vault_set() {
+    let mut v = Vault::default();
+    v.secrets
+        .insert("A_ONE".into(), secret("shared-value-0001-xyz"));
+    v.secrets
+        .insert("B_TWO".into(), secret("shared-value-0001-xyz"));
+    let r = with_secret::suspect::audit_entry(&v, "B_TWO", &[]);
+    assert!(r.iter().any(|s| s.contains("A_ONE")), "{r:?}");
+    assert!(with_secret::suspect::audit_entry(&v, "NOPE", &[]).is_empty());
+}

@@ -54,6 +54,7 @@ fn is_32_hex(v: &str) -> bool {
 /// Rules that fire for `value`. `env` is the process environment (passed in
 /// so a test needs no global state).
 pub fn audit_value(value: &str, env: &[(String, String)]) -> Vec<String> {
+    let value = value.trim();
     let mut out = Vec::new();
     if is_32_hex(value) {
         out.push(
@@ -71,21 +72,28 @@ pub fn audit_value(value: &str, env: &[(String, String)]) -> Vec<String> {
     out
 }
 
-/// Every entry with at least one rule, in name order. Includes "same value as
-/// another entry": masking then labels the value with whichever name sorts
-/// first, which is the mislabel this module exists to catch.
-pub fn audit_vault(vault: &Vault, env: &[(String, String)]) -> Vec<(String, Vec<String>)> {
-    let mut out = Vec::new();
-    for (name, s) in &vault.secrets {
-        let mut rules = audit_value(&s.value, env);
-        for (other, o) in &vault.secrets {
-            if other != name && o.value == s.value {
-                rules.push(format!("has the same value as entry {other}"));
-            }
-        }
-        if !rules.is_empty() {
-            out.push((name.clone(), rules));
+/// Every rule that fires for one entry, including "same value as another
+/// entry": masking can then label that value with either name, which is the
+/// mislabel this module exists to catch. Empty for an unknown name.
+pub fn audit_entry(vault: &Vault, name: &str, env: &[(String, String)]) -> Vec<String> {
+    let Some(s) = vault.secrets.get(name) else {
+        return Vec::new();
+    };
+    let mut rules = audit_value(&s.value, env);
+    for (other, o) in &vault.secrets {
+        if other != name && o.value == s.value {
+            rules.push(format!("has the same value as entry {other}"));
         }
     }
-    out
+    rules
+}
+
+/// Every entry with at least one rule, in name order.
+pub fn audit_vault(vault: &Vault, env: &[(String, String)]) -> Vec<(String, Vec<String>)> {
+    vault
+        .secrets
+        .keys()
+        .map(|n| (n.clone(), audit_entry(vault, n, env)))
+        .filter(|(_, r)| !r.is_empty())
+        .collect()
 }

@@ -291,7 +291,7 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
                 },
             );
             let env: Vec<(String, String)> = std::env::vars().collect();
-            let suspect = suspect::audit_value(&vault.secrets[name].value, &env);
+            let suspect = suspect::audit_entry(&vault, name, &env);
             store.save(&vault, masks_json(&vault)?)?;
             println!("stored {name}");
             for rule in suspect {
@@ -341,7 +341,11 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
                         }
                     }
                 }
-                Err(e) => println!("value audit skipped: {e}"),
+                // fixed text: a serde error for a decrypted-but-invalid vault can
+                // quote a value, and `check` is meant to be safe to paste
+                Err(_) => println!(
+                    "value audit skipped: the vault could not be loaded (`with-secret vault list` shows why)"
+                ),
             }
             Ok(if ok { 0 } else { 1 })
         }
