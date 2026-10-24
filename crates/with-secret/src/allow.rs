@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `vault allow`: change who may request an entry, without re-entering the
-//! value (WITH-SECRET-REQUESTER-ALLOWLIST-DESIGN.md §4). This module is the
+//! value (docs/WITH-SECRET-REQUESTER-ALLOWLIST-DESIGN.md §4). This module is the
 //! pure part: parse the arguments, plan the new lists, word the prompt and
 //! the binding. `main.rs` does the I/O.
 //!
