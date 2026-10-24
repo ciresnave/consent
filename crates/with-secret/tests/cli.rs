@@ -416,7 +416,8 @@ fn vault_check_names_a_non_secret_value_and_never_prints_a_value() {
     }
     let store = VaultStore {
         dir: dir.path().into(),
-        protector: SelectedProtector::new(),
+        // for_dir puts the key beside the vault, as WITH_SECRET_DIR does for the binary
+        protector: SelectedProtector::for_dir(dir.path()),
     };
     store.save(&v, masks_json(&v).unwrap()).unwrap();
     let out = bin()
