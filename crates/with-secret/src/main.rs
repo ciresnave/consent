@@ -18,7 +18,7 @@ use with_secret::mask::{mask_json, masks_json, HashMask, StreamMasker};
 use with_secret::platform::SelectedProtector;
 use with_secret::run::{authorize, parse_run, Approver, DEFAULT_WAIT};
 use with_secret::vault::*;
-use with_secret::{allow, audit, dumpcheck, identity};
+use with_secret::{allow, audit, dumpcheck, identity, suspect};
 
 fn data_dir() -> Result<PathBuf, String> {
     // ⚠️ TEST-ONLY override. Pointing it elsewhere reaches an EMPTY vault, not
@@ -290,8 +290,13 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
                     lanes,
                 },
             );
+            let env: Vec<(String, String)> = std::env::vars().collect();
+            let suspect = suspect::audit_value(&vault.secrets[name].value, &env);
             store.save(&vault, masks_json(&vault)?)?;
             println!("stored {name}");
+            for rule in suspect {
+                eprintln!("warning: {name}: {rule}; is this the right value for this entry? (`with-secret vault check` lists every such entry)");
+            }
             Ok(0)
         }
         Some("allow") => allow_cmd(&store, &args[1..]),
@@ -320,6 +325,24 @@ fn vault_cmd(args: &[String]) -> Result<u8, String> {
                 if ok { "ok" } else { "FAILED" }
             );
             println!("Windows Hello: run `with-secret vault set` to see the prompt; `check` never prompts.");
+            // names and rules only, never a value; findings warn, they do not fail
+            let env: Vec<(String, String)> = std::env::vars().collect();
+            match store.load() {
+                Ok(vault) => {
+                    let found = suspect::audit_vault(&vault, &env);
+                    println!(
+                        "values that look like a non-secret: {} of {} entries",
+                        found.len(),
+                        vault.secrets.len()
+                    );
+                    for (name, rules) in &found {
+                        for r in rules {
+                            println!("  {name}: {r}");
+                        }
+                    }
+                }
+                Err(e) => println!("value audit skipped: {e}"),
+            }
             Ok(if ok { 0 } else { 1 })
         }
         _ => Err("vault list | set | allow | remove | check".into()),

@@ -388,3 +388,64 @@ fn an_unknown_tool_name_is_allowed() {
         "unknown tool name silently allows"
     );
 }
+
+/// `vault check` audits every stored value in-process and prints entry NAMES
+/// and rules only. The control: a token-shaped entry stays out of the report.
+#[test]
+fn vault_check_names_a_non_secret_value_and_never_prints_a_value() {
+    use chrono::Utc;
+    use with_secret::mask::masks_json;
+    use with_secret::platform::SelectedProtector;
+    use with_secret::vault::{Access, Secret, Vault, VaultStore};
+    const ID: &str = "0123456789abcdef0123456789abcdef";
+    const TOKEN: &str = "cfut_Zk3-pQ9xLm2VbN7wTr5YhJ8aSd4FgC1eUo6iXq0AbEzK";
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = Vault::default();
+    for (n, val) in [("CF_WORKERS_AI", ID), ("GOOD_TOKEN", TOKEN)] {
+        v.secrets.insert(
+            n.into(),
+            Secret {
+                value: val.into(),
+                env_var: "X".into(),
+                access: Access::Read,
+                created_at: Utc::now(),
+                rotate_by: None,
+                lanes: vec![],
+            },
+        );
+    }
+    let store = VaultStore {
+        dir: dir.path().into(),
+        protector: SelectedProtector::new(),
+    };
+    store.save(&v, masks_json(&v).unwrap()).unwrap();
+    let out = bin()
+        .env("WITH_SECRET_DIR", dir.path())
+        .env("CLOUDFLARE_ACCOUNT_ID", ID)
+        .args(["vault", "check"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        out.status.success(),
+        "{text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("1 of 2 entries"), "{text}");
+    assert!(text.contains("CF_WORKERS_AI: exactly 32 hex"), "{text}");
+    assert!(
+        text.contains(
+            "CF_WORKERS_AI: equals the value of the non-secret env var CLOUDFLARE_ACCOUNT_ID"
+        ),
+        "{text}"
+    );
+    assert!(
+        !text.contains("GOOD_TOKEN:"),
+        "control entry was flagged: {text}"
+    );
+    let all = format!("{text}{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        !all.contains(ID) && !all.contains(TOKEN),
+        "a value was printed"
+    );
+}

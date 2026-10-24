@@ -11,4 +11,5 @@ pub mod identity;
 pub mod mask;
 pub mod platform;
 pub mod run;
+pub mod suspect;
 pub mod vault;

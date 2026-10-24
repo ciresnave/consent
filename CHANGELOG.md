@@ -3,6 +3,10 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.16.1 (vault: warn on a value that looks like a non-secret, 2026-10-24)
+
+- **with-secret: `vault set` warns, and `vault check` audits, values that look like a non-secret.** Incident 2026-10-23: a Cloudflare account id (32 hex) sat in an API-token entry; output masking then rewrote the id under that entry's name. Rules (`suspect.rs`): exactly 32 hex characters; equals the value of a non-secret env var (`CLOUDFLARE_ACCOUNT_ID`, `*_ACCOUNT_ID`, `*_PROJECT_ID`, `*_REGION`, ... never a name containing TOKEN, SECRET, KEY or PASSWORD); same value as another entry. `vault set` still stores the value and warns on stderr. `vault check` decrypts in-process (no Hello, like `vault list`) and prints each flagged entry's NAME and the rule, never a value; findings do not change the exit code. Non-breaking.
+
 ## 0.16.0 (compile-time audit, OverMind 2026-10-18)
 
 - ⚠️ #17's breaking `Approval` change (below) reached `main` UNBUMPED at 0.15.9; this release carries the number. External code that builds an `Approval` literal stops compiling: enable `test-support` and use `Approval::for_test` in tests.
