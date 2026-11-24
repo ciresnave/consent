@@ -37,5 +37,3 @@ user-request = { path = ".", features = ["test-support"] }
 # signs test assertions like a key would (fido2 feature tests)
 ring = "0.17.14"
 tempfile = "3.27.0"
-# real time zones, for the DST-gap tests (review of #1)
-chrono-tz = "0.10.4"

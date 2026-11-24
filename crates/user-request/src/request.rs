@@ -457,6 +457,107 @@ mod tests {
     use super::*;
     use chrono::FixedOffset;
 
+    /// A test-only zone with ONE spring-forward gap, so the DST-gap tests need
+    /// no zone database (chrono-tz is unmaintained, RUSTSEC-2026-0555). The
+    /// offsets and the instant are the real ones for the two dates tested;
+    /// outside the gap it is a plain fixed offset on each side.
+    #[derive(Clone, Copy, Debug)]
+    struct GapZone {
+        /// UTC offset (seconds) before the transition
+        before: i32,
+        /// UTC offset (seconds) from the transition on
+        after: i32,
+        /// The transition, as a UTC instant
+        transition: DateTime<Utc>,
+    }
+
+    /// Carries its zone: `DateTime::timezone()` rebuilds the zone from the
+    /// offset alone (`TimeZone::from_offset`), and `next_local_midnight`
+    /// depends on that to find the gap.
+    #[derive(Clone, Copy, Debug)]
+    struct GapOffset(i32, GapZone);
+
+    impl std::fmt::Display for GapOffset {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:+}s", self.0)
+        }
+    }
+
+    impl chrono::Offset for GapOffset {
+        fn fix(&self) -> FixedOffset {
+            FixedOffset::east_opt(self.0).unwrap()
+        }
+    }
+
+    impl TimeZone for GapZone {
+        type Offset = GapOffset;
+        fn from_offset(o: &GapOffset) -> Self {
+            o.1
+        }
+        fn offset_from_local_date(&self, l: &chrono::NaiveDate) -> chrono::LocalResult<GapOffset> {
+            self.offset_from_local_datetime(&l.and_hms_opt(0, 0, 0).unwrap())
+        }
+        fn offset_from_local_datetime(
+            &self,
+            l: &chrono::NaiveDateTime,
+        ) -> chrono::LocalResult<GapOffset> {
+            // local wall-clock readings of the transition instant, either side
+            let gap_start = self.transition.naive_utc() + Duration::seconds(self.before.into());
+            let gap_end = self.transition.naive_utc() + Duration::seconds(self.after.into());
+            if *l < gap_start {
+                chrono::LocalResult::Single(GapOffset(self.before, *self))
+            } else if *l >= gap_end {
+                chrono::LocalResult::Single(GapOffset(self.after, *self))
+            } else {
+                chrono::LocalResult::None
+            }
+        }
+        fn offset_from_utc_date(&self, u: &chrono::NaiveDate) -> GapOffset {
+            self.offset_from_utc_datetime(&u.and_hms_opt(0, 0, 0).unwrap())
+        }
+        fn offset_from_utc_datetime(&self, u: &chrono::NaiveDateTime) -> GapOffset {
+            GapOffset(
+                if *u >= self.transition.naive_utc() {
+                    self.after
+                } else {
+                    self.before
+                },
+                *self,
+            )
+        }
+    }
+
+    /// Control: the fake zone is a gap where the real one is, and nowhere else.
+    #[test]
+    fn the_test_zone_has_exactly_one_gap() {
+        let beirut = GapZone {
+            before: 2 * 3600,
+            after: 3 * 3600,
+            transition: Utc.with_ymd_and_hms(2026, 3, 28, 22, 0, 0).unwrap(),
+        };
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 3, 29).unwrap();
+        assert_eq!(
+            beirut.from_local_datetime(&day.and_hms_opt(0, 0, 0).unwrap()),
+            chrono::LocalResult::None
+        );
+        assert!(beirut
+            .from_local_datetime(&day.and_hms_opt(0, 59, 59).unwrap())
+            .earliest()
+            .is_none());
+        assert_eq!(
+            beirut
+                .from_local_datetime(&day.and_hms_opt(1, 0, 0).unwrap())
+                .earliest()
+                .unwrap()
+                .with_timezone(&Utc),
+            Utc.with_ymd_and_hms(2026, 3, 28, 22, 0, 0).unwrap()
+        );
+        assert!(beirut
+            .from_local_datetime(&day.pred_opt().unwrap().and_hms_opt(23, 59, 59).unwrap())
+            .earliest()
+            .is_some());
+    }
+
     /// 2026-10-07 h:m in Phoenix (UTC-7, no DST), host time zone irrelevant.
     fn at(h: u32, m: u32) -> DateTime<FixedOffset> {
         FixedOffset::west_opt(7 * 3600)
@@ -477,8 +578,12 @@ mod tests {
     /// 00:00 EET -> 01:00 EEST). The day starts at 22:00Z, not 3h later.
     #[test]
     fn a_dst_gap_midnight_is_the_first_real_instant_of_the_day() {
-        use chrono_tz::Asia::Beirut;
-        let now = Beirut.with_ymd_and_hms(2026, 3, 28, 20, 0, 0).unwrap();
+        let beirut = GapZone {
+            before: 2 * 3600,
+            after: 3 * 3600,
+            transition: Utc.with_ymd_and_hms(2026, 3, 28, 22, 0, 0).unwrap(),
+        };
+        let now = beirut.with_ymd_and_hms(2026, 3, 28, 20, 0, 0).unwrap();
         assert_eq!(
             next_local_midnight(now),
             Utc.with_ymd_and_hms(2026, 3, 28, 22, 0, 0).unwrap()
@@ -494,8 +599,12 @@ mod tests {
     /// the evening before.
     #[test]
     fn a_dst_gap_west_of_utc_is_not_hours_early() {
-        use chrono_tz::America::Santiago;
-        let now = Santiago.with_ymd_and_hms(2026, 9, 5, 18, 0, 0).unwrap();
+        let santiago = GapZone {
+            before: -4 * 3600,
+            after: -3 * 3600,
+            transition: Utc.with_ymd_and_hms(2026, 9, 6, 4, 0, 0).unwrap(),
+        };
+        let now = santiago.with_ymd_and_hms(2026, 9, 5, 18, 0, 0).unwrap();
         assert_eq!(
             next_local_midnight(now),
             Utc.with_ymd_and_hms(2026, 9, 6, 4, 0, 0).unwrap()
