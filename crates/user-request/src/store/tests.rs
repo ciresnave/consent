@@ -2341,3 +2341,28 @@ fn an_unbound_lane_dialog_approval_is_refused_and_never_matches() {
         .find_at(KindId::LaneDialogBypass, "trust", &who("fuel", "x"), t0())
         .is_none());
 }
+
+/// PM condition (b): the store case-folds subjects, but two Unix paths that
+/// differ only by case are two files. The name folds, the path does not.
+#[test]
+fn placement_paths_differing_only_by_case_do_not_share_an_approval() {
+    let a = "TOKEN -> /srv/app/Secret.env";
+    let b = "TOKEN -> /srv/app/secret.env";
+    assert_ne!(normal_subject(a), normal_subject(b));
+    // control: the NAME still folds, as for every secret
+    assert_eq!(
+        normal_subject("TOKEN -> /srv/app/x"),
+        normal_subject("token -> /srv/app/x")
+    );
+    // control: a plain subject still folds whole, as before
+    assert_eq!(normal_subject(" TJ_DB "), "tj_db");
+    // and through the store: approving one path does not find the other
+    let d = tempdir().unwrap();
+    let r = who("secretant", "s");
+    let mut s = open(d.path());
+    let mut ap = approval(KindId::SecretPlacement, a, &r, None);
+    ap.expires_at = None;
+    add(&mut s, ap);
+    assert!(s.find_at(KindId::SecretPlacement, a, &r, t0()).is_some());
+    assert!(s.find_at(KindId::SecretPlacement, b, &r, t0()).is_none());
+}

@@ -16,6 +16,7 @@ pub mod dpapi;
 pub mod fido2;
 pub mod hello;
 pub mod locate;
+pub mod placement;
 pub mod platform;
 pub mod presence;
 pub mod request;

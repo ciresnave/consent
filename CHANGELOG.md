@@ -3,6 +3,10 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.17.0 (**BREAKING**: `KindId::SecretPlacement` added, `KindId::ALL` goes from 3 to 4 kinds; 2026-11-24; allocated by pm-assist)
+
+- **user-request: a fourth request kind, `KindId::SecretPlacement`.** `KindId::ALL` now has 4 entries, so code that matches `KindId` exhaustively or counts `ALL` must handle it. The Windows owner-only ACL check is not done here (the writer sets it). Summary from the lane's READY; the PR body has the detail.
+
 ## 0.16.2 (allowlist design doc moves here from OverMind, 2026-10-24; provisional number)
 
 - **docs only:** `docs/WITH-SECRET-REQUESTER-ALLOWLIST-DESIGN.md` moved from OverMind (OverMind ROADMAP row 6b step 2). Its `allow.rs` comment now points at the new path. No code change.

@@ -1807,6 +1807,13 @@ fn live(g: &StoredGrant, now: DateTime<Utc>) -> bool {
 
 /// Subjects are compared trimmed and case-folded (review I9).
 pub fn normal_subject(s: &str) -> String {
+    // A placement subject is `NAME -> PATH`: the name folds like any secret
+    // name, the PATH is exact. Two Unix paths differing only by case are two
+    // files, and must not share one approval and cooldown. (On Windows the
+    // same file under two spellings costs one more prompt: the safe side.)
+    if let Some((name, path)) = crate::request::parse_secret_placement_subject(s.trim()) {
+        return format!("{} -> {path}", name.to_ascii_lowercase());
+    }
     // ASCII only (review 5, M-3): Unicode folding would make the Kelvin sign
     // in "\u{212A}_TOKEN" the same subject as "k_token"
     s.trim().to_ascii_lowercase()
