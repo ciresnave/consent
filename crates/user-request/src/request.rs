@@ -58,14 +58,20 @@ pub enum KindId {
     /// agentlife: restore the fleet from ONE frozen plan, once (board 150,
     /// CireSnave 2026-10-08: "One-shot."). Spent when the restore runs.
     RestorePlan,
+    /// secretant: write ONE named secret into ONE file, once (board 498 A,
+    /// CireSnave 2026-11-24). The subject is `NAME -> PATH` (never a value).
+    /// Spent before the write; a crash needs a fresh approval.
+    SecretPlacement,
 }
 
 impl KindId {
-    /// Every kind, for checks that must cover all of them.
-    pub const ALL: [KindId; 3] = [
+    /// Every kind, for checks that must cover all of them. ⚠️ A public
+    /// array: growing it (3 to 4 for `SecretPlacement`) is a breaking change.
+    pub const ALL: [KindId; 4] = [
         KindId::Secret,
         KindId::LaneDialogBypass,
         KindId::RestorePlan,
+        KindId::SecretPlacement,
     ];
 
     pub fn name(self) -> &'static str {
@@ -73,6 +79,7 @@ impl KindId {
             KindId::Secret => "use a secret",
             KindId::LaneDialogBypass => "auto-answer a lane startup dialog",
             KindId::RestorePlan => "restore lanes",
+            KindId::SecretPlacement => "place a secret in a file",
         }
     }
 
@@ -84,6 +91,7 @@ impl KindId {
             KindId::Secret => MaxGrant::Finite,
             KindId::LaneDialogBypass => MaxGrant::Forever,
             KindId::RestorePlan => MaxGrant::OneUse,
+            KindId::SecretPlacement => MaxGrant::OneUse,
         }
     }
 
@@ -95,6 +103,9 @@ impl KindId {
             // reboot is asked for by a NEW agentlife process, and that is the
             // case this kind exists for.
             KindId::RestorePlan => Scope::AnyRequester,
+            // The asking process is the binding: a placement is for the
+            // session that asked, and a restart voids it.
+            KindId::SecretPlacement => Scope::ThisRequester,
         }
     }
 }
@@ -162,6 +173,73 @@ pub fn restore_plan_subject(plan_hash: &str) -> Result<String, String> {
 /// `restore_plan_subject` makes.
 pub fn parse_restore_plan_subject(subject: &str) -> Option<&str> {
     subject.strip_prefix("plan ").filter(|h| plain_hash(h))
+}
+
+/// The longest a whole subject may be. `prompt_text` clips a subject past
+/// this, and a placement subject must be shown whole, so a longer one is
+/// REFUSED, never clipped.
+pub const MAX_SUBJECT_CHARS: usize = 200;
+
+/// A path characters that the prompt would alter, quote or that could end a
+/// quoted display: none is allowed. `clean` leaves a string unchanged only
+/// when it has no control or invisible character.
+fn plain_path(p: &str) -> bool {
+    if p.is_empty()
+        || crate::channel::clean(p) != p
+        || p.trim() != p
+        || p.chars()
+            .any(|c| matches!(c, '"' | '\'' | '`' | '<' | '>' | '|' | '?' | '*'))
+    {
+        return false;
+    }
+    let (sep, rest) = if let Some(rest) = p.strip_prefix('/') {
+        ('/', rest)
+    } else {
+        let b = p.as_bytes();
+        // X:\rest, a drive letter and backslashes only
+        if b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\' {
+            ('\\', &p[3..])
+        } else {
+            return false;
+        }
+    };
+    if sep == '\\' && p.contains('/') {
+        return false;
+    }
+    if sep == '/' && p.contains('\\') {
+        return false;
+    }
+    // no empty, `.` or `..` component, no trailing separator, and no stray
+    // `:` (a Windows alternate data stream) after the drive
+    !rest.is_empty()
+        && !rest.contains(':')
+        && rest
+            .split(sep)
+            .all(|c| !c.is_empty() && c != "." && c != "..")
+}
+
+/// The subject of a `SecretPlacement` request: `NAME -> PATH`, the secret's
+/// name and the ONE absolute file it may be written to, never a value. The
+/// path is compared EXACTLY (see `normal_subject`). Refused, never clipped,
+/// when the whole subject would pass `MAX_SUBJECT_CHARS`.
+pub fn secret_placement_subject(name: &str, path: &str) -> Result<String, String> {
+    let s = format!("{name} -> {path}");
+    if parse_secret_placement_subject(&s).is_none() {
+        return Err(format!(
+            "a placement is `NAME -> PATH`: NAME 1 to {MAX_LANE_DIALOG_PART_CHARS} characters of letters, digits, '-', '_' or '.'; PATH absolute (/x or X:\\x), no '.' or '..' component, no quote, control or invisible character, and the whole subject at most {MAX_SUBJECT_CHARS} characters"
+        ));
+    }
+    Ok(s)
+}
+
+/// The (name, path) a subject names, if it is exactly the shape
+/// `secret_placement_subject` makes: ONE strict parser.
+pub fn parse_secret_placement_subject(subject: &str) -> Option<(&str, &str)> {
+    if subject.chars().count() > MAX_SUBJECT_CHARS {
+        return None;
+    }
+    let (name, path) = subject.split_once(" -> ")?;
+    (plain_part(name) && plain_path(path)).then_some((name, path))
 }
 
 /// What the approver grants. A request-side choice: once approved, what is
@@ -319,6 +397,9 @@ impl Request {
             }
             KindId::RestorePlan if parse_restore_plan_subject(&self.subject).is_none() => {
                 Err("a restore request must name one plan (subject 'plan <hash>')".into())
+            }
+            KindId::SecretPlacement if parse_secret_placement_subject(&self.subject).is_none() => {
+                Err("a placement request must be 'NAME -> PATH' (absolute path, at most 200 characters)".into())
             }
             _ => Ok(()),
         }
@@ -591,7 +672,7 @@ mod tests {
         }
         for k in KindId::ALL
             .into_iter()
-            .filter(|k| *k != KindId::RestorePlan)
+            .filter(|k| k.max() != MaxGrant::OneUse)
         {
             assert!(!Grant::OneUse.within(k.max(), now), "{k:?}");
         }
@@ -715,5 +796,126 @@ mod tests {
             .check_subject()
             .is_ok());
         assert!(r(KindId::Secret, "TJ_DB").check_subject().is_ok());
+    }
+
+    // -- SecretPlacement (board 498 A, CireSnave 2026-11-24) ------------------
+
+    #[test]
+    fn a_placement_is_one_use_this_requester_and_not_forever() {
+        let k = KindId::SecretPlacement;
+        assert_eq!(k.max(), MaxGrant::OneUse);
+        assert_eq!(k.scope(), Scope::ThisRequester);
+        assert!(KindId::ALL.contains(&k));
+        assert!(!Grant::Forever.within(k.max(), at(9, 0)));
+        assert!(Grant::OneUse.within(k.max(), at(9, 0)));
+    }
+
+    /// ⚠️ `ALL` is a public array: its length is part of the API (3 to 4 is
+    /// the 0.17.0 break). A new kind must change this, and the README list.
+    #[test]
+    fn the_kind_list_is_the_four_the_readme_names() {
+        assert_eq!(KindId::ALL.len(), 4);
+        let readme = include_str!("../README.md");
+        for k in KindId::ALL {
+            assert!(readme.contains(&format!("`{k:?}`")), "README omits {k:?}");
+        }
+        // the forever list names only forever kinds, and SecretPlacement is not one
+        let section = readme
+            .split("### Kinds that can be granted forever")
+            .nth(1)
+            .unwrap()
+            .split("\n## ")
+            .next()
+            .unwrap();
+        assert!(!section.contains("`SecretPlacement`"));
+    }
+
+    /// An older reader (three kinds) cannot parse a stored `SecretPlacement`:
+    /// serde refuses an unknown variant, so such a reader fails closed rather
+    /// than reading it as some other kind. `OldKindId` is the pre-0.17 enum.
+    #[test]
+    fn an_old_reader_fails_closed_on_the_new_kind() {
+        #[derive(Debug, Deserialize)]
+        #[allow(dead_code)]
+        enum OldKindId {
+            Secret,
+            LaneDialogBypass,
+            RestorePlan,
+        }
+        for k in ["Secret", "LaneDialogBypass", "RestorePlan"] {
+            assert!(serde_json::from_str::<OldKindId>(&format!("\"{k}\"")).is_ok());
+        }
+        let new = serde_json::to_string(&KindId::SecretPlacement).unwrap();
+        assert_eq!(new, "\"SecretPlacement\"");
+        assert!(serde_json::from_str::<OldKindId>(&new).is_err());
+    }
+
+    #[test]
+    fn a_placement_subject_is_name_arrow_absolute_path_and_nothing_else() {
+        for ok in [
+            "TOKEN -> /home/me/.env",
+            "tok.en-1 -> C:\\Users\\me\\app\\.env",
+            "T -> /a b/c d",
+        ] {
+            assert!(parse_secret_placement_subject(ok).is_some(), "{ok}");
+            let (n, p) = parse_secret_placement_subject(ok).unwrap();
+            assert_eq!(secret_placement_subject(n, p).unwrap(), ok);
+        }
+        for bad in [
+            "TOKEN",                         // no path
+            "TOKEN ->/x",                    // not the exact separator
+            "TOKEN -> relative/x",           // not absolute
+            "TOKEN -> /",                    // no file
+            "TOKEN -> /a/../b",              // dot-dot
+            "TOKEN -> /a/./b",               // dot
+            "TOKEN -> /a//b",                // empty component
+            "TOKEN -> /a/b/",                // trailing separator
+            "TOKEN -> /a/\"b\"",             // quote
+            "TOKEN -> /a/'b'",               // quote
+            "TOKEN -> /a/b\n/c",             // control
+            "TOKEN -> /a/b\u{202E}c",        // bidi override
+            "TOKEN -> /a/b\\c",              // mixed separators
+            "TOKEN -> C:/a/b",               // drive with forward slash
+            "TOKEN -> C:\\a\\b:stream",      // alternate data stream
+            "TOKEN -> \\\\server\\share\\f", // UNC
+            "TOKEN -> /a/b ",                // trailing space
+            "TO KEN -> /a",                  // name has a space
+            "TOKEN -> /a -> /b -> \u{0}",    // NUL
+        ] {
+            assert!(parse_secret_placement_subject(bad).is_none(), "{bad:?}");
+        }
+    }
+
+    /// REFUSED, never clipped: the prompt clips at 200, a placement is shown whole.
+    #[test]
+    fn a_placement_subject_over_the_cap_is_refused_and_at_the_cap_is_whole() {
+        let prefix = "T -> /";
+        let at_cap = format!("{prefix}{}", "a".repeat(MAX_SUBJECT_CHARS - prefix.len()));
+        assert_eq!(at_cap.chars().count(), MAX_SUBJECT_CHARS);
+        assert!(parse_secret_placement_subject(&at_cap).is_some());
+        let over = format!("{at_cap}a");
+        assert!(parse_secret_placement_subject(&over).is_none());
+        assert!(secret_placement_subject("T", &over[5..]).is_err());
+    }
+
+    #[test]
+    fn a_placement_request_is_checked_like_the_other_bound_kinds() {
+        let r = |s: &str| Request {
+            kind: KindId::SecretPlacement,
+            subject: s.into(),
+            summary: String::new(),
+            requester: Requester {
+                role: "secretant".into(),
+                session_id: "s".into(),
+                claude_pid: 1,
+                claude_start_secs: 1,
+                managed: true,
+            },
+            reason: String::new(),
+            allowed_lanes: None,
+        };
+        assert!(r("TOKEN -> /home/me/.env").check_subject().is_ok());
+        assert!(r("TOKEN").check_subject().is_err());
+        assert!(r("TOKEN -> /a/../b").check_subject().is_err());
     }
 }

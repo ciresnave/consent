@@ -27,6 +27,18 @@ code requesting something from a user could use them interchangeably"*.
 | `Secret` (with-secret) | any **finite** length: the requester states it, the person sees the end (loudly past today) and may refuse (board 134); never forever (PM ruling) | this requester only; a lane restart voids it |
 | `LaneDialogBypass` (lane-restart) | **FOREVER** | one lane's one dialog (`lane 'fuel', dialog 'trust'`, shown whole in the prompt); any requester may use it |
 | `RestorePlan` (agentlife) | **ONE USE**: no duration, never forever (board 150, CireSnave 2026-10-08: *"One-shot."*) | one frozen plan (subject `plan <hash>`; `bound_hash` is the same hash); any requester may use it, because a restore after a reboot is asked for by a new process |
+| `SecretPlacement` (secretant) | **ONE USE**: no duration, never forever (board 498 A, CireSnave 2026-11-24) | one secret NAME into one absolute file PATH (subject `NAME -> PATH`, shown whole, never a value; a subject over 200 characters is refused, never clipped; the NAME folds case, the PATH is compared exactly); this requester only |
+
+### Placement (`SecretPlacement`)
+
+The subject is `NAME -> PATH`, parsed by ONE strict parser (`parse_secret_placement_subject`). The path is
+absolute (`/x` or `X:\x`), has no `.` or `..` component, no quote, control or invisible character, and the whole
+subject is at most 200 characters (the prompt clips past that, so a longer one is refused instead). No value
+ever appears in a request. `placement::verify_placement_target` re-reads the disk at the write: the canonical
+parent plus the file name must spell the approved path exactly (a link, junction, `..` or case difference fails
+closed), the target must be a plain file (not a symlink or reparse point), and on Unix not group- or
+world-accessible with a parent not writable by others. ⚠️ It does NOT check the owner-only ACL on Windows: the
+writer sets that. Spent with `spend_one_use` BEFORE the write; a crash needs a fresh approval.
 
 ### One-shot kinds (`RestorePlan`)
 

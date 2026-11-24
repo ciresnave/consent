@@ -130,7 +130,7 @@ pub fn prompt_text(req: &Request, grant: &Grant, now: DateTime<Utc>) -> String {
     format!(
         "Who: {who}\nWants: {}: {}\nDuration: {}{allowed}\n\nReason given: {why}",
         req.kind.name(),
-        clip(&clean(&req.subject), 200),
+        clip(&clean(&req.subject), crate::request::MAX_SUBJECT_CHARS),
         grant.describe(now),
     )
 }
@@ -804,8 +804,10 @@ Reason given: forged"
     fn a_subject_of_up_to_200_chars_reaches_the_prompt_whole_and_more_is_clipped() {
         let whole = "a".repeat(200);
         let r = req(KindId::Secret, "overmind", &whole, "x", true);
-        assert!(prompt_text(&r, &Grant::Forever, t0()).contains(&format!(": {whole}
-")));
+        assert!(prompt_text(&r, &Grant::Forever, t0()).contains(&format!(
+            ": {whole}
+"
+        )));
         let over = "a".repeat(201);
         let r = req(KindId::Secret, "overmind", &over, "x", true);
         let text = prompt_text(&r, &Grant::Forever, t0());
