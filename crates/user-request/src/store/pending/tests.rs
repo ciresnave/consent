@@ -917,3 +917,39 @@ fn two_approvals_for_one_plan_never_give_two_uses() {
         .submit_at(&restore("third-role", PLAN), &Grant::OneUse, PLAN, t0())
         .is_ok());
 }
+
+/// TASK 2026-11-24 test 2: a one-use approval is spent exactly once even when
+/// several openers race for it. Each thread opens the store itself (the OS
+/// file lock serialises them, as it does separate processes), so the loser
+/// must see the winner's spend ON DISK, not in memory.
+#[test]
+fn two_openers_racing_for_one_use_approval_spend_it_exactly_once() {
+    let d = tempdir().unwrap();
+    let id = submit_restore(d.path(), PLAN);
+    answer_via(d.path(), &id, PLAN, &hello(approve, t0()), t0()).unwrap();
+    let subject = crate::request::restore_plan_subject(PLAN).unwrap();
+    let dir = d.path().to_path_buf();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+    let threads: Vec<_> = (0..4)
+        .map(|_| {
+            let (dir, subject, barrier) = (dir.clone(), subject.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                let mut s = open(&dir);
+                s.spend_one_use(KindId::RestorePlan, &subject, &who("agentlife"))
+                    .is_ok()
+            })
+        })
+        .collect();
+    let wins = threads
+        .into_iter()
+        .map(|t| t.join().unwrap())
+        .filter(|ok| *ok)
+        .count();
+    assert_eq!(wins, 1, "one use must be spendable exactly once");
+    // control: the approval existed, so the one win was real, and now it is gone
+    let s = open(&dir);
+    assert!(s
+        .find(KindId::RestorePlan, &subject, &who("agentlife"))
+        .is_none());
+}

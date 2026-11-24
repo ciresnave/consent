@@ -794,4 +794,21 @@ Reason given: forged"
         let bare = req(KindId::LaneDialogBypass, "pm", "trust", "r", true);
         assert!(matches!(ch.present(&bare, &g, WAIT), Outcome::Refused(_)));
     }
+
+    /// TASK 2026-11-24 test 1: `hello.rs` hands the prompt to Windows Hello
+    /// verbatim (`HSTRING::from(prompt)`), so what the person sees is what
+    /// `prompt_text` builds. It clips a subject past 200 characters, so a
+    /// subject kind that must be "shown whole" has to be capped at or under
+    /// that: this pins both sides of the line.
+    #[test]
+    fn a_subject_of_up_to_200_chars_reaches_the_prompt_whole_and_more_is_clipped() {
+        let whole = "a".repeat(200);
+        let r = req(KindId::Secret, "overmind", &whole, "x", true);
+        assert!(prompt_text(&r, &Grant::Forever, t0()).contains(&format!(": {whole}
+")));
+        let over = "a".repeat(201);
+        let r = req(KindId::Secret, "overmind", &over, "x", true);
+        let text = prompt_text(&r, &Grant::Forever, t0());
+        assert!(!text.contains(&over) && text.contains('…'), "{text}");
+    }
 }
