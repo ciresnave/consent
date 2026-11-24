@@ -17,6 +17,8 @@ pub mod fido2;
 pub mod hello;
 pub mod locate;
 pub mod placement;
+#[cfg(windows)]
+mod placement_acl;
 pub mod platform;
 pub mod presence;
 pub mod request;
