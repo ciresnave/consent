@@ -6,7 +6,7 @@ all-features = true
 version = 2
 # PM ruling 2026-11-24 (consent#21): chrono is unmaintained (RUSTSEC-2026-0543)
 # and every project here uses it. Ignored with an EXPIRY: this entry must be
-# removed, with chrono left for jiff or time, by 2026-12-17 (ROADMAP row).
+# removed, with chrono left for jiff or time, by 2026-12-17 (ROADMAP.md R1; renewing needs a new PM decision).
 # chrono-tz (RUSTSEC-2026-0555) is NOT ignored: it is no longer a dependency.
 ignore = [
     { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no safe upgrade; leave chrono by 2026-12-17" },
