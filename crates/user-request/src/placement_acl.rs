@@ -156,24 +156,51 @@ mod tests {
         assert!(e.contains("S-1-1-0"), "{e}");
     }
 
+    /// Replaces `f`'s DACL (protected) with the one in `sddl`, without
+    /// PowerShell (its security module does not always load on CI).
+    fn set_dacl_from_sddl(f: &Path, sddl: &str) {
+        use windows::core::BOOL;
+        use windows::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
+        };
+        use windows::Win32::Security::{
+            GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+        };
+        let w = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+        let (wsddl, wpath) = (w(sddl.as_ref()), w(f.as_os_str()));
+        unsafe {
+            let mut sd = PSECURITY_DESCRIPTOR::default();
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(wsddl.as_ptr()),
+                1,
+                &mut sd,
+                None,
+            )
+            .unwrap();
+            let (mut present, mut defaulted) = (BOOL(0), BOOL(0));
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted).unwrap();
+            let rc = SetNamedSecurityInfoW(
+                PCWSTR(wpath.as_ptr()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(dacl),
+                None,
+            );
+            LocalFree(Some(HLOCAL(sd.0)));
+            assert_eq!(rc.0, 0, "SetNamedSecurityInfoW");
+        }
+    }
+
     #[test]
     fn a_callback_allow_ace_for_everyone_is_refused() {
         let d = tempdir().unwrap();
         let f = d.path().join("a.env");
         std::fs::write(&f, b"x").unwrap();
         lock_to_current_user(&f);
-        // SetNamedSecurityInfo via PowerShell: an SDDL callback ACE for Everyone.
-        let script = format!(
-            "$a = Get-Acl -LiteralPath '{p}'; \
-             $a.SetSecurityDescriptorSddlForm('D:PAI(A;;FA;;;SY)(XA;;FR;;;WD;(1))', 'Access'); \
-             [System.IO.File]::SetAccessControl('{p}', $a)",
-            p = f.display()
-        );
-        let st = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &script])
-            .output()
-            .unwrap();
-        assert!(st.status.success(), "{st:?}");
+        set_dacl_from_sddl(&f, "D:PAI(A;;FA;;;SY)(XA;;FR;;;WD;(1))");
         let e = require_owner_only(&f).unwrap_err();
         assert!(e.contains("cannot be checked"), "{e}");
     }
