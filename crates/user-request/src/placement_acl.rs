@@ -22,6 +22,9 @@ use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 const SYSTEM: &str = "S-1-5-18";
 const ADMINISTRATORS: &str = "S-1-5-32-544";
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+/// Deny, audit, alarm, mandatory-label, resource-attribute and scoped-policy
+/// ACE types: none of them grants access.
+const NON_GRANTING_ACE_TYPES: [u8; 15] = [1, 2, 3, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19];
 
 /// SAFETY: `sid` must point to a valid SID.
 unsafe fn sid_string(sid: PSID) -> Result<String, String> {
@@ -81,13 +84,23 @@ pub fn require_owner_only(path: &Path) -> Result<(), String> {
         }
         let owner_s = unsafe { sid_string(owner) }?;
         let me = current_user()?;
+        if owner_s != me && owner_s != SYSTEM && owner_s != ADMINISTRATORS {
+            // An owner can always rewrite the DACL and read the file.
+            return Err(format!("it is owned by {owner_s}"));
+        }
         let count = unsafe { (*dacl).AceCount };
         for i in 0..u32::from(count) {
             let mut ace: *mut core::ffi::c_void = std::ptr::null_mut();
             unsafe { GetAce(dacl, i, &mut ace) }.map_err(|e| e.to_string())?;
             let hdr = ace as *const ACCESS_ALLOWED_ACE;
-            if unsafe { (*hdr).Header.AceType } != ACCESS_ALLOWED_ACE_TYPE {
+            let ty = unsafe { (*hdr).Header.AceType };
+            if NON_GRANTING_ACE_TYPES.contains(&ty) {
                 continue;
+            }
+            if ty != ACCESS_ALLOWED_ACE_TYPE {
+                // Object, callback and compound allow ACEs grant access with a
+                // layout we do not parse; an unknown type is unknowable. Refuse.
+                return Err(format!("it has an ACE of type {ty} that cannot be checked"));
             }
             let sid = PSID(unsafe { std::ptr::addr_of!((*hdr).SidStart) } as *mut _);
             let s = unsafe { sid_string(sid) }?;
@@ -141,6 +154,28 @@ mod tests {
         assert!(st.status.success(), "{st:?}");
         let e = require_owner_only(&f).unwrap_err();
         assert!(e.contains("S-1-1-0"), "{e}");
+    }
+
+    #[test]
+    fn a_callback_allow_ace_for_everyone_is_refused() {
+        let d = tempdir().unwrap();
+        let f = d.path().join("a.env");
+        std::fs::write(&f, b"x").unwrap();
+        lock_to_current_user(&f);
+        // SetNamedSecurityInfo via PowerShell: an SDDL callback ACE for Everyone.
+        let script = format!(
+            "$a = Get-Acl -LiteralPath '{p}'; \
+             $a.SetSecurityDescriptorSddlForm('D:PAI(A;;FA;;;SY)(XA;;FR;;;WD;(1))', 'Access'); \
+             [System.IO.File]::SetAccessControl('{p}', $a)",
+            p = f.display()
+        );
+        let st = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .unwrap();
+        assert!(st.status.success(), "{st:?}");
+        let e = require_owner_only(&f).unwrap_err();
+        assert!(e.contains("cannot be checked"), "{e}");
     }
 
     #[test]
