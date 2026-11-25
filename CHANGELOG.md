@@ -3,6 +3,10 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.17.1 (Windows owner-only ACL check; behaviour tightening, not API-breaking; 2026-11-25; allocated by pm-assist)
+
+- **with-secret / user-request: a Windows owner-only ACL check** (consent#22, tasked by pm-platform). A behaviour tightening on Windows; no public API change. Open limits are listed in the PR body.
+
 ## 0.17.0 (**BREAKING**: `KindId::SecretPlacement` added, `KindId::ALL` goes from 3 to 4 kinds; 2026-11-24; allocated by pm-assist)
 
 - **user-request: a fourth request kind, `KindId::SecretPlacement`.** `KindId::ALL` now has 4 entries, so code that matches `KindId` exhaustively or counts `ALL` must handle it. The Windows owner-only ACL check is not done here (the writer sets it). Summary from the lane's READY; the PR body has the detail.

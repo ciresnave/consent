@@ -36,9 +36,10 @@ absolute (`/x` or `X:\x`), has no `.` or `..` component, no quote, control or in
 subject is at most 200 characters (the prompt clips past that, so a longer one is refused instead). No value
 ever appears in a request. `placement::verify_placement_target` re-reads the disk at the write: the canonical
 parent plus the file name must spell the approved path exactly (a link, junction, `..` or case difference fails
-closed), the target must be a plain file (not a symlink or reparse point), and on Unix not group- or
-world-accessible with a parent not writable by others. ⚠️ It does NOT check the owner-only ACL on Windows: the
-writer sets that. Spent with `spend_one_use` BEFORE the write; a crash needs a fresh approval.
+closed), the target must be a plain file (not a symlink or reparse point), and an existing target must be
+owner-only (Windows: its DACL names only the owner, SYSTEM and Administrators; Unix: not group- or
+world-accessible, parent not writable by others). ⚠️ A target that does not exist yet has no ACL to read: the
+writer must create it owner-only, and the Windows parent directory is not checked. Spent with `spend_one_use` BEFORE the write; a crash needs a fresh approval.
 
 ### One-shot kinds (`RestorePlan`)
 

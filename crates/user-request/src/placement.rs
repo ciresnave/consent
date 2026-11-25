@@ -4,12 +4,13 @@
 //! re-reads the disk at the moment of the write and refuses anything that is
 //! no longer exactly that file.
 //!
-//! ⚠️ What it does NOT check: on Windows the owner-only ACL of the target.
-//! A Windows caller must set an owner-only ACL itself; this crate verifies
-//! only that the target is a plain file at exactly the approved path (no
-//! symlink, junction or other reparse point), its parent resolving to the
-//! same place. On Unix it also refuses a group- or world-accessible target
-//! and a group- or world-writable parent.
+//! The target must be a plain file at exactly the approved path (no symlink,
+//! junction or other reparse point), its parent resolving to the same place.
+//! An EXISTING target must also be owner-only: on Windows its DACL may name
+//! only the owner, SYSTEM and Administrators; on Unix it must not be group-
+//! or world-accessible, and the parent must not be group- or world-writable.
+//! ⚠️ A target that does not exist yet has no ACL to read: the writer must
+//! create it owner-only, and on Windows nothing here checks the parent.
 
 use std::path::{Path, PathBuf};
 
@@ -54,6 +55,8 @@ pub fn verify_placement_target(subject: &str) -> Result<PathBuf, String> {
                 if m.file_attributes() & 0x400 != 0 {
                     return Err(format!("{path} is a reparse point"));
                 }
+                crate::placement_acl::require_owner_only(target)
+                    .map_err(|e| format!("{path} is not owner-only: {e}"))?;
             }
             #[cfg(unix)]
             {
@@ -105,10 +108,31 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
+        #[cfg(windows)]
+        crate::placement_acl::lock_to_current_user(&f);
         assert!(verify_placement_target(&subject_for(&f)).is_ok());
         let sub = d.path().join("dir");
         std::fs::create_dir(&sub).unwrap();
         assert!(verify_placement_target(&subject_for(&sub)).is_err());
+    }
+
+    /// An existing target whose ACL grants Everyone is refused at the write.
+    #[cfg(windows)]
+    #[test]
+    fn an_existing_target_granted_to_everyone_is_refused() {
+        let d = tempdir().unwrap();
+        let f = d.path().join("a.env");
+        std::fs::write(&f, "x").unwrap();
+        crate::placement_acl::lock_to_current_user(&f);
+        assert!(verify_placement_target(&subject_for(&f)).is_ok());
+        let st = std::process::Command::new("icacls")
+            .arg(&f)
+            .args(["/grant", "*S-1-1-0:R"])
+            .output()
+            .unwrap();
+        assert!(st.status.success(), "{st:?}");
+        let e = verify_placement_target(&subject_for(&f)).unwrap_err();
+        assert!(e.contains("not owner-only"), "{e}");
     }
 
     /// A parent that is swapped for a link after approval no longer spells
