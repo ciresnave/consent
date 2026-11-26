@@ -3,6 +3,10 @@
 Version numbers continue OverMind's. The entries below 0.12.0 are the part of OverMind's
 `CHANGELOG.md` that concerns these two crates, kept so the history travels with the code.
 
+## 0.17.2 (CI only: SUP-016 licence gate beside spdx_gate.py, ROADMAP R1 wording; consent#23; 2026-11-26; allocated by pm-assist)
+
+- CI and docs only; no code change; not breaking.
+
 ## 0.17.1 (Windows owner-only ACL check; behaviour tightening, not API-breaking; 2026-11-25; allocated by pm-assist)
 
 - **with-secret / user-request: a Windows owner-only ACL check** (consent#22, tasked by pm-platform). A behaviour tightening on Windows; no public API change. Open limits are listed in the PR body.

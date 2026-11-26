@@ -25,7 +25,7 @@ jobs:
   spdx:
     name: Every source file declares the licence
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The gate's own controls run FIRST: a checker nobody has watched fail
@@ -34,6 +34,21 @@ jobs:
         run: python3 .github/spdx_gate.py --self-test
       - name: Every tracked source file declares the licence
         run: python3 .github/spdx_gate.py
+      # SUP-016 (coderipper 0.48.1 from crates.io; config in .coderipper.toml) is the per-file gate to
+      # come; spdx_gate.py above stays, self-tested, until the fleet job retires. The first compile is
+      # minutes, so cache the install root.
+      - name: Cache coderipper 0.48.1
+        id: cr-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/coderipper-0.48.1
+          key: coderipper-0.48.1-${{ runner.os }}
+      - name: Install coderipper 0.48.1
+        if: steps.cr-cache.outputs.cache-hit != 'true'
+        run: RUSTC_WRAPPER= cargo install coderipper --version 0.48.1 --locked --root ~/coderipper-0.48.1
+      - name: Every tracked source file declares the licence (SUP-016)
+        # --deny medium: a headerless file is Medium/High and fails.
+        run: ~/coderipper-0.48.1/bin/coderipper check SUP-016 --project . --deny medium
 
   rust:
     name: rust (${{ matrix.os }})
