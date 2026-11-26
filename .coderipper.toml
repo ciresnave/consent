@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Per-file licence gate (SUP-016 opt-in): will replace .github/spdx_gate.py.
+[sup016]
+gate = true
+licence = "MIT OR Apache-2.0"
+extensions = [".py", ".ts", ".sh", ".rs"]
+min_files = 20
+copyright_expected = ["spdx_gate.py", ".coderipper.toml"]
